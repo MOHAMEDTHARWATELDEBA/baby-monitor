@@ -263,84 +263,112 @@
     // ==========================================
     // وضع المرسل (كاميرا الطفل)
     // ==========================================
+    // ==========================================
+    // وضع المرسل (كاميرا الطفل) - نسخة مضادة للتعليق
+    // ==========================================
     window.startSenderMode = async () => {
         document.getElementById('roleScreen').classList.add('hidden');
         document.getElementById('senderScreen').classList.remove('hidden');
         const statusEl = document.getElementById('senderStatus');
-        statusEl.textContent = "جاري طلب إذن الكاميرا...";
+        statusEl.textContent = "جاري تشغيل الكاميرا...";
+        statusEl.style.color = "#f59e0b";
 
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            statusEl.textContent = "❌ المتصفح لا يسمح بالكاميرا (تأكد من HTTPS)";
+            statusEl.textContent = "❌ المتصفح لا يدعم الكاميرا (يلزم HTTPS)";
             statusEl.style.color = "#ef4444";
             return;
         }
 
         await requestWakeLock();
-        await loadCameras();
-        await initMediaAndStream();
+        await initMediaAndStream(null, true);
     };
 
-    async function loadCameras() {
-        const statusEl = document.getElementById('senderStatus');
+    async function populateCameraList() {
         try {
-            const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            tempStream.getTracks().forEach(t => t.stop());
-
+            if (!navigator.mediaDevices.enumerateDevices) return;
             const devices = await navigator.mediaDevices.enumerateDevices();
             const videoDevices = devices.filter(d => d.kind === 'videoinput');
             const select = document.getElementById('cameraSelect');
+            if (!videoDevices.length) return;
+
+            const currentVal = select.value;
             select.innerHTML = '';
 
             videoDevices.forEach((device, idx) => {
                 const opt = document.createElement('option');
                 opt.value = device.deviceId;
-                opt.text = device.label || `كاميرا ${idx + 1}`;
-                if (/back|rear|environment|خلفية/i.test(device.label)) {
+                opt.text = device.label || `عدسة ${idx + 1}`;
+                if (currentVal && device.deviceId === currentVal) {
+                    opt.selected = true;
+                } else if (!currentVal && /back|rear|environment|خلفية/i.test(device.label)) {
                     opt.selected = true;
                 }
                 select.appendChild(opt);
             });
-        } catch (err) {
-            statusEl.textContent = "❌ رفض إذن الكاميرا/الميكروفون";
-            statusEl.style.color = "#ef4444";
+        } catch (e) {
+            // تجاهل فشل تعداد العدسات حتى لا يعطل البث الأساسي
         }
     }
 
-    async function initMediaAndStream(deviceId = null) {
+    async function initMediaAndStream(deviceId = null, firstTime = false) {
         const statusEl = document.getElementById('senderStatus');
         try {
-            if (localStream) localStream.getTracks().forEach(t => t.stop());
+            if (localStream) {
+                localStream.getTracks().forEach(t => t.stop());
+            }
 
-            const selectedDeviceId = deviceId || document.getElementById('cameraSelect').value;
+            const videoConstraint = deviceId
+                ? { deviceId: { ideal: deviceId } }
+                : { facingMode: { ideal: "environment" } };
+
             let rawStream;
-
             try {
                 rawStream = await navigator.mediaDevices.getUserMedia({
-                    video: selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : { facingMode: "environment" },
-                    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
-                });
-            } catch (e) {
-                rawStream = await navigator.mediaDevices.getUserMedia({
-                    video: true,
+                    video: videoConstraint,
                     audio: true
+                });
+            } catch (audioErr) {
+                // محاولة تشغيل الكاميرا فقط إذا كان الميكروفون يسبب تعارضاً
+                rawStream = await navigator.mediaDevices.getUserMedia({
+                    video: videoConstraint,
+                    audio: false
                 });
             }
 
-            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            const source = audioCtx.createMediaStreamSource(rawStream);
-            gainNode = audioCtx.createGain();
-            gainNode.gain.value = parseFloat(document.getElementById('senderGain').value);
-            const dest = audioCtx.createMediaStreamDestination();
-            source.connect(gainNode);
-            gainNode.connect(dest);
-
             videoTrack = rawStream.getVideoTracks()[0];
-            const boostedAudioTrack = dest.stream.getAudioTracks()[0];
-            localStream = new MediaStream([videoTrack, boostedAudioTrack]);
+            const audioTracks = rawStream.getAudioTracks();
+
+            let finalAudioTrack = null;
+            if (audioTracks.length > 0) {
+                try {
+                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                    const audioCtx = new AudioCtx();
+                    if (audioCtx.state === 'suspended') {
+                        await audioCtx.resume();
+                    }
+                    const source = audioCtx.createMediaStreamSource(rawStream);
+                    gainNode = audioCtx.createGain();
+                    gainNode.gain.value = parseFloat(document.getElementById('senderGain').value) || 1.5;
+                    const dest = audioCtx.createMediaStreamDestination();
+                    source.connect(gainNode);
+                    gainNode.connect(dest);
+                    finalAudioTrack = dest.stream.getAudioTracks()[0] || audioTracks[0];
+                } catch (audioCtxErr) {
+                    finalAudioTrack = audioTracks[0];
+                }
+            }
+
+            const tracks = [videoTrack];
+            if (finalAudioTrack) tracks.push(finalAudioTrack);
+            localStream = new MediaStream(tracks);
 
             const videoEl = document.getElementById('localVideo');
             videoEl.srcObject = localStream;
             await videoEl.play().catch(() => {});
+
+            if (firstTime) {
+                await populateCameraList();
+            }
 
             const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
             const zoomInput = document.getElementById('senderZoom');
@@ -351,81 +379,15 @@
             }
 
             startMotionDetector(videoEl);
+
+            statusEl.textContent = "🟡 في انتظار جهاز المراقبة...";
+            statusEl.style.color = "#f59e0b";
+
             await setupSenderWebRTC();
         } catch (err) {
-            statusEl.textContent = "❌ تعذر تشغيل الكاميرا: " + (err.name || err.message);
+            statusEl.textContent = "❌ خطأ كاميرا: " + (err.name || err.message || "غير معروف");
             statusEl.style.color = "#ef4444";
         }
-    }
-
-    window.switchCamera = () => {
-        const deviceId = document.getElementById('cameraSelect').value;
-        initMediaAndStream(deviceId);
-    };
-
-    window.applyZoom = async (val) => {
-        document.getElementById('senderZoomVal').textContent = `${parseFloat(val).toFixed(1)}x`;
-        if (!videoTrack) return;
-        const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
-        if (capabilities.zoom) {
-            try {
-                await videoTrack.applyConstraints({ advanced: [{ zoom: parseFloat(val) }] });
-            } catch (e) {
-                document.getElementById('localVideo').style.transform = `scale(${val})`;
-            }
-        } else {
-            document.getElementById('localVideo').style.transform = `scale(${val})`;
-        }
-    };
-
-    window.applyMicGain = (val) => {
-        document.getElementById('senderGainVal').textContent = `${parseFloat(val).toFixed(1)}x`;
-        if (gainNode) gainNode.gain.value = parseFloat(val);
-    };
-
-    window.updateMotionSensitivity = (val) => {
-        motionSensitivity = parseInt(val);
-        document.getElementById('senderMotionVal').textContent = `${val}%`;
-    };
-
-    function startMotionDetector(videoEl) {
-        if (motionInterval) clearInterval(motionInterval);
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        canvas.width = 160;
-        canvas.height = 90;
-        let prevFrame = null;
-        let lastAlertTime = 0;
-
-        motionInterval = setInterval(() => {
-            if (videoEl.readyState < 2) return;
-            ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-            const currentFrame = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-
-            if (prevFrame) {
-                let changedPixels = 0;
-                const colorThreshold = 110 - motionSensitivity;
-
-                for (let i = 0; i < currentFrame.length; i += 4) {
-                    const diff = Math.abs(currentFrame[i] - prevFrame[i]) +
-                                 Math.abs(currentFrame[i+1] - prevFrame[i+1]) +
-                                 Math.abs(currentFrame[i+2] - prevFrame[i+2]);
-                    if (diff > colorThreshold) changedPixels++;
-                }
-
-                const totalPixels = canvas.width * canvas.height;
-                if ((changedPixels / totalPixels) > 0.004) {
-                    const now = Date.now();
-                    if (now - lastAlertTime > 3000) {
-                        lastAlertTime = now;
-                        if (dataChannel && dataChannel.readyState === 'open') {
-                            dataChannel.send(JSON.stringify({ type: 'MOTION_ALERT' }));
-                        }
-                    }
-                }
-            }
-            prevFrame = new Uint8ClampedArray(currentFrame);
-        }, 300);
     }
 
     async function setupSenderWebRTC() {
