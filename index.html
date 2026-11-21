@@ -68,6 +68,12 @@
             display: flex; flex-direction: column; justify-content: center; align-items: center;
             color: #334155; text-align: center; padding: 20px;
         }
+        .video-wrapper.zoomable { touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; }
+        .video-wrapper.zoomable video { transform-origin: 0 0; will-change: transform; pointer-events: none; }
+        button.talking { background: var(--danger); animation: pulse 1s infinite; }
+        .row { display: flex; gap: 8px; margin-bottom: 4px; }
+        .row > * { flex: 1; margin-bottom: 0; }
+        .hint { font-size: 0.75rem; color: var(--muted); text-align: center; margin: 6px 0 10px; }
     </style>
 </head>
 <body>
@@ -100,6 +106,7 @@
     <!-- 3. واجهة المرسل (الكاميرا) -->
     <div id="senderScreen" class="card hidden">
         <h2>📱 كاميرا البث المباشر</h2>
+        <div id="talkBanner" class="alert-banner hidden" style="background: var(--primary);">🗣️ المراقب يتحدث الآن...</div>
         <div class="video-wrapper">
             <video id="localVideo" autoplay playsinline muted></video>
             <span class="badge" id="senderStatus">جاري التهيئة...</span>
@@ -140,7 +147,7 @@
         <h2>👁️ شاشة المراقبة المباشرة</h2>
         <div id="motionAlert" class="alert-banner hidden">⚠️ تنبيه: تم رصد حركة للطفل!</div>
 
-        <div class="video-wrapper">
+        <div class="video-wrapper zoomable" id="remoteWrap">
             <video id="remoteVideo" autoplay playsinline></video>
             <span class="badge" id="viewerStatus">في انتظار البث...</span>
         </div>
@@ -150,10 +157,32 @@
 
         <div class="control-group">
             <div class="control-header">
-                <span>التحكم عن بُعد: تقريب الكاميرا (Zoom)</span>
+                <span>🔍 تقريب الصورة (Zoom)</span>
+                <span id="remoteDZoomVal">1.0x</span>
+            </div>
+            <input type="range" id="remoteDZoom" min="1" max="8" step="0.1" value="1" oninput="setDigitalZoomSlider(this.value)">
+            <div class="hint">اسحب الصورة لتحريك التقريب لأي مكان • قرص بإصبعين (أو عجلة الماوس) للتكبير • اضغط مرتين للتكبير/الإعادة</div>
+            <button class="secondary" style="margin-bottom:0" onclick="resetDigitalZoom()">↺ إعادة ضبط التقريب</button>
+        </div>
+
+        <button id="talkBtn" onclick="toggleTalk()">🎤 تحدث مع الطفل</button>
+
+        <div class="control-group">
+            <label>📷 اختيار كاميرا الطفل</label>
+            <div class="row">
+                <select id="remoteCameraSelect" onchange="sendRemoteCommand('camera', this.value)"><option value="">في انتظار الاتصال...</option></select>
+                <button class="secondary" onclick="sendRemoteCommand('camera', 'next')">🔄 التالية</button>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <div id="hwZoomBox" class="hidden">
+            <div class="control-header">
+                <span>تقريب العدسة نفسها (جودة أعلى، للمنتصف فقط)</span>
                 <span id="remoteZoomVal">1.0x</span>
             </div>
             <input type="range" id="remoteZoom" min="1" max="5" step="0.1" value="1" oninput="sendRemoteCommand('zoom', this.value)">
+            </div>
 
             <div class="control-header" style="margin-top: 12px;">
                 <span>التحكم عن بُعد: حساسية الميكروفون</span>
@@ -172,6 +201,9 @@
         <button class="danger" onclick="stopAll()">إنهاء المراقبة</button>
     </div>
 </div>
+
+<!-- صوت المراقب (للتحدث مع الطفل) -->
+<audio id="talkAudio" autoplay playsinline></audio>
 
 <!-- شاشة سوداء لتوفير البطارية في هاتف الطفل -->
 <div id="blackoutOverlay" class="blackout hidden" onclick="toggleBlackout()">
@@ -223,6 +255,7 @@
     // المراقب
     let viewerUnsubs = [], viewerSid = null, viewerPending = [];
     let viewerQueue = Promise.resolve(), viewerRetryTimer = null, hardwareZoomRemote = false;
+    let talkSender = null, talkTrack = null, talking = false, talkBusy = false, talkPrevMuted = false;
 
     // ==========================================
     // إعدادات TURN — مطلوبة لو الجهازين على شبكتين مختلفتين (واي فاي + بيانات موبايل)
@@ -470,30 +503,50 @@
     }
 
     // تبديل العدسة بدون إعادة الاتصال (replaceTrack)
+    let switchingCam = false;
     window.switchCamera = async () => {
         const deviceId = $('cameraSelect').value;
-        if (!deviceId || !videoTrack) return;
+        if (!deviceId || !videoTrack || switchingCam) return;
+        switchingCam = true;
         const oldTrack = videoTrack;
-        oldTrack.stop();
-        let stream;
-        try { stream = await acquireMedia(deviceId, false); }
-        catch (e) {
-            try { stream = await acquireMedia(null, false); }
-            catch (e2) { setSenderStatus("❌ تعذر تبديل العدسة: " + cameraErrorText(e2), "#ef4444"); return; }
-        }
-        videoTrack = stream.getVideoTracks()[0];
-        rebuildLocalStream();
         try {
-            if (pc) {
-                const s = pc.getSenders().find(x => x.track === oldTrack);
-                if (s) await s.replaceTrack(videoTrack);
+            oldTrack.stop();
+            let stream;
+            try { stream = await acquireMedia(deviceId, false); }
+            catch (e) {
+                try { stream = await acquireMedia(null, false); }
+                catch (e2) { setSenderStatus("❌ تعذر تبديل العدسة: " + cameraErrorText(e2), "#ef4444"); return; }
             }
-        } catch (e) { console.warn(e); }
-        setupZoomUI();
-        prevFrame = null;
-        sendCaps();
-        populateCameraList();
+            videoTrack = stream.getVideoTracks()[0];
+            rebuildLocalStream();
+            try {
+                if (pc) {
+                    const s = pc.getSenders().find(x => x.track === oldTrack);
+                    if (s) await s.replaceTrack(videoTrack);
+                }
+            } catch (e) { console.warn(e); }
+            setupZoomUI();
+            prevFrame = null;
+            await populateCameraList();
+            sendCaps();
+        } finally { switchingCam = false; }
     };
+
+    function friendlyCam(label, i) {
+        const l = label || '';
+        const icon = /back|rear|environment|خلفية/i.test(l) ? '📷 خلفية' : /front|user|selfie|أمامية/i.test(l) ? '🤳 أمامية' : `📷 كاميرا ${i + 1}`;
+        return l ? `${icon} — ${l}` : icon;
+    }
+    function cameraList() {
+        return Array.from($('cameraSelect').options).map((o, i) => ({ id: o.value, label: friendlyCam(o.text, i) }));
+    }
+    function selectCamera(value) {
+        const sel = $('cameraSelect');
+        if (!sel.options.length) return;
+        if (value === 'next') sel.selectedIndex = (sel.selectedIndex + 1) % sel.options.length;
+        else sel.value = value;
+        window.switchCamera();
+    }
 
     window.applyZoom = async (v) => {
         const val = parseFloat(v);
@@ -565,7 +618,9 @@
             zoom: z ? { min: z.min, max: z.max, step: z.step || 0.1 } : null,
             zoomValue: $('senderZoom').value,
             gain: $('senderGain').value,
-            motion: $('senderMotion').value
+            motion: $('senderMotion').value,
+            cameras: cameraList(),
+            camera: $('cameraSelect').value
         }));
     }
 
@@ -573,11 +628,20 @@
         let msg;
         try { msg = JSON.parse(e.data); } catch (err) { return; }
         if (msg.type === 'hello') { sendCaps(); return; }
+        if (msg.type === 'camera') { selectCamera(msg.value); return; }
+        if (msg.type === 'talk') { $('talkBanner').classList.toggle('hidden', !msg.value); return; }
         const val = parseFloat(msg.value);
         if (!isFinite(val)) return;
         if (msg.type === 'zoom') { const el = $('senderZoom'); el.value = val; window.applyZoom(el.value); }
         else if (msg.type === 'gain') { const el = $('senderGain'); el.value = val; window.applyMicGain(el.value); }
         else if (msg.type === 'motion') { const el = $('senderMotion'); el.value = val; window.updateMotionSensitivity(el.value); }
+    }
+
+    function attachTalkAudio(track) {
+        const a = $('talkAudio');
+        a.srcObject = new MediaStream([track]);
+        a.volume = 1;
+        a.play().catch(() => {});
     }
 
     function cleanupSenderSignaling() {
@@ -593,6 +657,8 @@
         await remove(ref(db, `rooms/${roomId}`));
         if (gen !== setupGen) return;
 
+        $('talkAudio').srcObject = null;
+        $('talkBanner').classList.add('hidden');
         const sid = newSid();
         const pending = [];
         const peer = new RTCPeerConnection(rtcConfig);
@@ -604,6 +670,8 @@
         dataChannel = channel;
         channel.onopen = () => sendCaps();
         channel.onmessage = handleSenderCommand;
+
+        peer.ontrack = (ev) => { if (ev.track.kind === 'audio') attachTalkAudio(ev.track); };
 
         const offerCandidates = ref(db, `rooms/${roomId}/offerCandidates`);
         const answerCandidates = ref(db, `rooms/${roomId}/answerCandidates`);
@@ -648,6 +716,8 @@
                 try {
                     await peer.setRemoteDescription({ type: data.type, sdp: data.sdp });
                     diagSender("تم استلام رد المراقب");
+                    const at = peer.getTransceivers().find(t => t.receiver && t.receiver.track && t.receiver.track.kind === 'audio');
+                    if (at && !$('talkAudio').srcObject) attachTalkAudio(at.receiver.track);
                     for (const c of pending.splice(0)) await peer.addIceCandidate(c).catch(() => {});
                 } catch (e) { console.warn(e); }
             }, signalingError),
@@ -713,19 +783,29 @@
         else if (msg.type === 'caps') applyRemoteCaps(msg);
     }
 
+    function fillRemoteCameras(list, active) {
+        const sel = $('remoteCameraSelect');
+        sel.innerHTML = '';
+        list.forEach(c => {
+            const o = document.createElement('option');
+            o.value = c.id; o.text = c.label;
+            if (c.id === active) o.selected = true;
+            sel.appendChild(o);
+        });
+    }
+
     function applyRemoteCaps(msg) {
         const zoomEl = $('remoteZoom');
         hardwareZoomRemote = !!msg.zoom;
+        $('hwZoomBox').classList.toggle('hidden', !msg.zoom);
         if (msg.zoom) {
             zoomEl.min = msg.zoom.min; zoomEl.max = msg.zoom.max; zoomEl.step = msg.zoom.step || 0.1;
             if (msg.zoomValue != null) zoomEl.value = msg.zoomValue;
-            $('remoteVideo').style.transform = '';
-        } else {
-            zoomEl.min = 1; zoomEl.max = 5; zoomEl.step = 0.1;
+            $('remoteZoomVal').textContent = `${parseFloat(zoomEl.value).toFixed(1)}x`;
         }
-        $('remoteZoomVal').textContent = `${parseFloat(zoomEl.value).toFixed(1)}x`;
         if (msg.gain != null) { $('remoteGain').value = msg.gain; $('remoteGainVal').textContent = `${parseFloat(msg.gain).toFixed(1)}x`; }
         if (msg.motion != null) { $('remoteMotion').value = msg.motion; $('remoteMotionVal').textContent = `${msg.motion}%`; }
+        if (Array.isArray(msg.cameras) && msg.cameras.length) fillRemoteCameras(msg.cameras, msg.camera);
     }
 
     function createViewerPeer() {
@@ -796,6 +876,9 @@
         diagViewer("تم استلام العرض من الكاميرا");
 
         await peer.setRemoteDescription({ type: offer.type, sdp: offer.sdp });
+        const audioT = peer.getTransceivers().find(t => t.receiver && t.receiver.track && t.receiver.track.kind === 'audio');
+        if (audioT) { try { audioT.direction = 'sendrecv'; } catch (e) {} talkSender = audioT.sender; }
+        stopTalking();
         const ready = viewerPending.filter(c => c.sid === viewerSid);
         viewerPending = viewerPending.filter(c => c.sid !== viewerSid);
         for (const c of ready) {
@@ -849,16 +932,137 @@
     window.sendRemoteCommand = (type, value) => {
         if (type === 'zoom') {
             $('remoteZoomVal').textContent = `${parseFloat(value).toFixed(1)}x`;
-            if (!hardwareZoomRemote) $('remoteVideo').style.transform = `scale(${value})`;
         } else if (type === 'gain') {
             $('remoteGainVal').textContent = `${parseFloat(value).toFixed(1)}x`;
         } else if (type === 'motion') {
             $('remoteMotionVal').textContent = `${value}%`;
+        } else if (type === 'camera') {
+            diagViewer("جاري تبديل الكاميرا...");
         }
         if (dataChannel && dataChannel.readyState === 'open') {
             dataChannel.send(JSON.stringify({ type, value }));
         }
     };
+
+    // ===== التحدث مع الطفل (ميكروفون المراقب ← سماعة الكاميرا) =====
+    function sendTalkState(v) {
+        if (dataChannel && dataChannel.readyState === 'open') dataChannel.send(JSON.stringify({ type: 'talk', value: v }));
+    }
+    async function startTalking() {
+        if (talking || talkBusy) return;
+        if (!talkSender) { diagViewer("⚠️ لا يوجد اتصال بالكاميرا بعد"); return; }
+        talkBusy = true;
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false
+            });
+            talkTrack = stream.getAudioTracks()[0];
+            await talkSender.replaceTrack(talkTrack);
+            talking = true;
+            const v = $('remoteVideo');
+            talkPrevMuted = v.muted;
+            v.muted = true;   // منع الصدى أثناء التحدث
+            $('talkBtn').classList.add('talking');
+            $('talkBtn').textContent = '🎙️ جاري التحدث... (اضغط للإيقاف)';
+            sendTalkState(true);
+        } catch (e) {
+            if (talkTrack) { talkTrack.stop(); talkTrack = null; }
+            diagViewer("❌ تعذر تشغيل الميكروفون: " + (e.name === 'NotAllowedError' ? 'تم رفض الإذن' : (e.name || e.message)));
+        } finally { talkBusy = false; }
+    }
+    async function stopTalking() {
+        if (!talking) return;
+        talking = false;
+        try { if (talkSender) await talkSender.replaceTrack(null); } catch (e) {}
+        if (talkTrack) { talkTrack.stop(); talkTrack = null; }
+        $('remoteVideo').muted = talkPrevMuted;
+        $('talkBtn').classList.remove('talking');
+        $('talkBtn').textContent = '🎤 تحدث مع الطفل';
+        sendTalkState(false);
+    }
+    window.toggleTalk = () => (talking ? stopTalking() : startTalking());
+
+    // ===== تقريب الصورة وتحريكها لأي مكان (على جهاز المراقب) =====
+    const dz = { s: 1, x: 0, y: 0 };
+    function dzApply() {
+        const wrap = $('remoteWrap');
+        const w = wrap.clientWidth, h = wrap.clientHeight;
+        dz.s = Math.min(8, Math.max(1, dz.s));
+        dz.x = Math.min(0, Math.max(w - w * dz.s, dz.x));
+        dz.y = Math.min(0, Math.max(h - h * dz.s, dz.y));
+        $('remoteVideo').style.transform = `translate(${dz.x}px, ${dz.y}px) scale(${dz.s})`;
+        $('remoteDZoom').value = dz.s;
+        $('remoteDZoomVal').textContent = `${dz.s.toFixed(1)}x`;
+    }
+    function dzZoomAt(ns, cx, cy) {
+        ns = Math.min(8, Math.max(1, ns));
+        const k = ns / dz.s;
+        dz.x = cx - (cx - dz.x) * k;
+        dz.y = cy - (cy - dz.y) * k;
+        dz.s = ns;
+        dzApply();
+    }
+    window.setDigitalZoomSlider = (v) => {
+        const w = $('remoteWrap');
+        dzZoomAt(parseFloat(v), w.clientWidth / 2, w.clientHeight / 2);
+    };
+    window.resetDigitalZoom = () => { dz.s = 1; dz.x = 0; dz.y = 0; dzApply(); };
+
+    (function setupZoomGestures() {
+        const wrap = $('remoteWrap');
+        const ptrs = new Map();
+        let last = null, lastTap = 0, moved = 0, startT = 0;
+        const pts = () => Array.from(ptrs.values());
+        const dist = () => { const [a, b] = pts(); return Math.hypot(a.x - b.x, a.y - b.y) || 1; };
+        const mid = () => { const [a, b] = pts(); return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; };
+
+        wrap.addEventListener('pointerdown', (e) => {
+            try { wrap.setPointerCapture(e.pointerId); } catch (err) {}
+            ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (ptrs.size === 1) { moved = 0; startT = Date.now(); }
+            last = ptrs.size === 2 ? { d: dist(), m: mid() } : null;
+        });
+        wrap.addEventListener('pointermove', (e) => {
+            if (!ptrs.has(e.pointerId)) return;
+            const prev = ptrs.get(e.pointerId);
+            const cur = { x: e.clientX, y: e.clientY };
+            ptrs.set(e.pointerId, cur);
+            if (ptrs.size === 1) {
+                const dx = cur.x - prev.x, dy = cur.y - prev.y;
+                moved += Math.abs(dx) + Math.abs(dy);
+                if (dz.s > 1) { dz.x += dx; dz.y += dy; dzApply(); }
+            } else if (ptrs.size === 2 && last) {
+                const d = dist(), m = mid(), r = wrap.getBoundingClientRect();
+                moved += 10;
+                dz.x += m.x - last.m.x;
+                dz.y += m.y - last.m.y;
+                dzZoomAt(dz.s * (d / last.d), m.x - r.left, m.y - r.top);
+                last = { d, m };
+            }
+        });
+        const up = (e) => {
+            if (!ptrs.has(e.pointerId)) return;
+            ptrs.delete(e.pointerId);
+            last = null;
+            if (e.type === 'pointerup' && ptrs.size === 0 && moved < 8 && Date.now() - startT < 300) {
+                const now = Date.now();
+                if (now - lastTap < 350) {   // نقر مزدوج
+                    const r = wrap.getBoundingClientRect();
+                    if (dz.s > 1.05) window.resetDigitalZoom();
+                    else dzZoomAt(3, e.clientX - r.left, e.clientY - r.top);
+                    lastTap = 0;
+                } else lastTap = now;
+            }
+        };
+        wrap.addEventListener('pointerup', up);
+        wrap.addEventListener('pointercancel', up);
+        wrap.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const r = wrap.getBoundingClientRect();
+            dzZoomAt(dz.s * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX - r.left, e.clientY - r.top);
+        }, { passive: false });
+        window.addEventListener('resize', () => { if (role === 'viewer') dzApply(); });
+    })();
 
     window.unmuteRemote = () => {
         const v = $('remoteVideo');
@@ -916,6 +1120,7 @@
             viewerUnsubs.forEach(u => { try { u(); } catch (e) {} });
             if (localStream) localStream.getTracks().forEach(t => t.stop());
             if (rawMicTrack) rawMicTrack.stop();
+            if (talkTrack) talkTrack.stop();
             if (audioCtx) audioCtx.close().catch(() => {});
             if (wakeLock) wakeLock.release().catch(() => {});
             if (pc) pc.close();
