@@ -224,15 +224,40 @@
     let viewerUnsubs = [], viewerSid = null, viewerPending = [];
     let viewerQueue = Promise.resolve(), viewerRetryTimer = null, hardwareZoomRemote = false;
 
-    // STUN + TURN (ضروري للاتصال عبر بيانات الموبايل / شبكات مختلفة)
-    const rtcConfig = {
-        iceServers: [
-            { urls: "stun:stun.l.google.com:19302" },
-            { urls: "stun:stun1.l.google.com:19302" },
-            { urls: ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443", "turn:openrelay.metered.ca:443?transport=tcp"],
-              username: "openrelayproject", credential: "openrelayproject" }
-        ]
-    };
+    // ==========================================
+    // إعدادات TURN — مطلوبة لو الجهازين على شبكتين مختلفتين (واي فاي + بيانات موبايل)
+    // سجّل حساب مجاني في Metered.ca ثم الصق رابط "Credentials API" كاملاً هنا، مثال:
+    // "https://اسم-تطبيقك.metered.live/api/v1/turn/credentials?apiKey=XXXX"
+    // ==========================================
+    const TURN_CREDENTIALS_URL = "";
+    const CUSTOM_TURN = [];   // أو خادمك الخاص: [{ urls: "turn:global.relay.metered.ca:443", username: "930ffdb2d9225ca5c77f3005", credential: "JU6cmznl7MFEYstY" }]
+
+    let rtcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }] };
+
+    async function loadIceServers() {
+        let servers = [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }, ...CUSTOM_TURN];
+        if (TURN_CREDENTIALS_URL) {
+            try {
+                const r = await fetch(TURN_CREDENTIALS_URL);
+                const list = r.ok ? await r.json() : null;
+                if (Array.isArray(list)) servers = servers.concat(list);
+            } catch (e) { console.warn("TURN fetch failed", e); }
+        }
+        rtcConfig = { iceServers: servers };
+    }
+
+    // إحصاء أنواع المرشحات لتشخيص الشبكة
+    let candStats = { host: 0, srflx: 0, relay: 0 };
+    const candSummary = () => `مرشحات: host ${candStats.host} / srflx ${candStats.srflx} / relay ${candStats.relay}`;
+    function trackCand(e, diag) {
+        if (e.candidate) { const t = e.candidate.type; if (t in candStats) candStats[t]++; return; }
+        diag(candStats.relay === 0
+            ? `⚠️ ${candSummary()} — لا يوجد خادم TURN شغال، الاتصال بين شبكتين مختلفتين غالباً سيفشل`
+            : candSummary());
+    }
+    const iceDiag = (st) => st === 'failed'
+        ? `❌ فشل الاتصال بين الجهازين (يلزم خادم TURN) | ${candSummary()}`
+        : `حالة الشبكة (ICE): ${st} | ${candSummary()}`;
 
     // ==========================================
     // تسجيل الدخول
@@ -338,6 +363,7 @@
             return;
         }
         await requestWakeLock();
+        await loadIceServers();
         await initMediaAndStream();
     };
 
@@ -570,6 +596,7 @@
         const sid = newSid();
         const pending = [];
         const peer = new RTCPeerConnection(rtcConfig);
+        candStats = { host: 0, srflx: 0, relay: 0 };
         pc = peer;
         localStream.getTracks().forEach(t => peer.addTrack(t, localStream));
 
@@ -582,6 +609,7 @@
         const answerCandidates = ref(db, `rooms/${roomId}/answerCandidates`);
 
         peer.onicecandidate = (e) => {
+            trackCand(e, diagSender);
             if (e.candidate) Promise.resolve(push(offerCandidates, { ...e.candidate.toJSON(), sid })).catch(() => {});
         };
 
@@ -605,7 +633,7 @@
             }
         };
 
-        peer.oniceconnectionstatechange = () => { if (peer === pc) diagSender(`حالة الشبكة (ICE): ${peer.iceConnectionState}`); };
+        peer.oniceconnectionstatechange = () => { if (peer === pc) diagSender(iceDiag(peer.iceConnectionState)); };
 
         const offer = await peer.createOffer();
         await peer.setLocalDescription(offer);
@@ -674,6 +702,7 @@
             alarmCtx.resume();
         } catch (e) {}
         await requestWakeLock();
+        await loadIceServers();
         connectToSender();
     };
 
@@ -705,6 +734,7 @@
             pc.close();
         }
         const peer = new RTCPeerConnection(rtcConfig);
+        candStats = { host: 0, srflx: 0, relay: 0 };
         pc = peer;
 
         peer.ontrack = (event) => {
@@ -729,6 +759,7 @@
         };
 
         peer.onicecandidate = (e) => {
+            trackCand(e, diagViewer);
             if (e.candidate && viewerSid) {
                 Promise.resolve(push(ref(db, `rooms/${roomId}/answerCandidates`), { ...e.candidate.toJSON(), sid: viewerSid })).catch(() => {});
             }
@@ -750,7 +781,7 @@
             }
         };
         peer.oniceconnectionstatechange = () => {
-            if (peer === pc) diagViewer(`حالة الشبكة (ICE): ${peer.iceConnectionState}`);
+            if (peer === pc) diagViewer(iceDiag(peer.iceConnectionState));
         };
         return peer;
     }
