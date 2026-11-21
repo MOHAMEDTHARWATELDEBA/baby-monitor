@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Baby Monitor Pro - Secure 2FA</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --primary: #3b82f6;
+            --danger: #ef4444;
+            --success: #10b981;
+            --text: #f8fafc;
+            --muted: #94a3b8;
+        }
+        * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+        body {
+            margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+            display: flex; flex-direction: column; align-items: center; min-height: 100vh;
+        }
+        .container { width: 100%; max-width: 500px; }
+        .card {
+            background: var(--card); border-radius: 16px; padding: 20px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.4); margin-bottom: 16px;
+        }
+        h2 { margin-top: 0; font-size: 1.3rem; text-align: center; color: var(--primary); }
+        label { display: block; margin-bottom: 6px; font-size: 0.9rem; color: var(--muted); }
+        input, select {
+            width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #334155;
+            background: #0f172a; color: var(--text); font-size: 1rem; margin-bottom: 14px;
+        }
+        button {
+            width: 100%; padding: 14px; border: none; border-radius: 10px;
+            background: var(--primary); color: white; font-size: 1rem; font-weight: bold;
+            cursor: pointer; transition: 0.2s; margin-bottom: 10px;
+        }
+        button:active { transform: scale(0.98); }
+        button.secondary { background: #334155; }
+        button.danger { background: var(--danger); }
+        button.success { background: var(--success); }
+        .hidden { display: none !important; }
+        
+        /* Video & Controls */
+        .video-wrapper {
+            position: relative; width: 100%; border-radius: 12px; overflow: hidden;
+            background: #000; aspect-ratio: 16/9; margin-bottom: 14px;
+        }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        .badge {
+            position: absolute; top: 10px; right: 10px; padding: 4px 10px;
+            border-radius: 20px; font-size: 0.75rem; font-weight: bold;
+            background: rgba(15, 23, 42, 0.8); border: 1px solid #334155;
+        }
+        .alert-banner {
+            background: var(--danger); color: white; padding: 12px; border-radius: 10px;
+            text-align: center; font-weight: bold; margin-bottom: 14px;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+        
+        .control-group { margin-bottom: 14px; background: #0f172a; padding: 12px; border-radius: 10px; }
+        .control-header { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 6px; }
+        input[type="range"] { padding: 0; margin: 0; accent-color: var(--primary); }
+        .status-text { font-size: 0.85rem; text-align: center; color: var(--muted); margin-top: 8px; }
+        .blackout {
+            position: fixed; inset: 0; background: #000; z-index: 9999;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            color: #334155; text-align: center; padding: 20px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- 1. شاشة تسجيل الدخول والمصادقة الثنائية -->
+    <div id="loginScreen" class="card">
+        <h2>🔒 نظام مراقبة الطفل المشفر</h2>
+        <label>اسم المستخدم (Username)</label>
+        <input type="text" id="username" placeholder="مثال: admin" autocomplete="username">
+        
+        <label>كلمة المرور (Password)</label>
+        <input type="password" id="password" placeholder="••••••••" autocomplete="current-password">
+        
+        <label>رمز الأمان الثاني (2FA Secret PIN)</label>
+        <input type="password" id="twoFactorPin" placeholder="أدخل الرمز السري المشترك بين الجهازين" inputmode="numeric">
+        
+        <button id="loginBtn" onclick="handleLogin()">تسجيل الدخول الآمن</button>
+        <div id="loginError" class="status-text" style="color: var(--danger);"></div>
+    </div>
+
+    <!-- 2. شاشة اختيار وضع الجهاز -->
+    <div id="roleScreen" class="card hidden">
+        <h2>اختر وضع هذا الجهاز</h2>
+        <button class="success" onclick="startSenderMode()">📱 وضع الكاميرا (هاتف عند الطفل)</button>
+        <button onclick="startViewerMode()">👁️ وضع المراقبة (هاتفي / الكمبيوتر)</button>
+        <button class="secondary" onclick="logout()">تسجيل خروج</button>
+    </div>
+
+    <!-- 3. واجهة المرسل (الكاميرا) -->
+    <div id="senderScreen" class="card hidden">
+        <h2>📱 كاميرا البث المباشر</h2>
+        <div class="video-wrapper">
+            <video id="localVideo" autoplay playsinline muted></video>
+            <span class="badge" id="senderStatus">جاري التهيئة...</span>
+        </div>
+
+        <div class="control-group">
+            <label>اختيار عدسة الكاميرا (Lens)</label>
+            <select id="cameraSelect" onchange="switchCamera()"></select>
+            
+            <div class="control-header">
+                <span>التقريب (Zoom)</span>
+                <span id="senderZoomVal">1.0x</span>
+            </div>
+            <input type="range" id="senderZoom" min="1" max="5" step="0.1" value="1" oninput="applyZoom(this.value)">
+        </div>
+
+        <div class="control-group">
+            <div class="control-header">
+                <span>تضخيم الميكروفون (Mic Gain)</span>
+                <span id="senderGainVal">1.5x</span>
+            </div>
+            <input type="range" id="senderGain" min="1" max="5" step="0.2" value="1.5" oninput="applyMicGain(this.value)">
+            
+            <div class="control-header" style="margin-top: 12px;">
+                <span>حساسية كاشف الحركة (كلما زاد الرقم زادت الدقة)</span>
+                <span id="senderMotionVal">85%</span>
+            </div>
+            <input type="range" id="senderMotion" min="50" max="98" step="1" value="85" oninput="updateMotionSensitivity(this.value)">
+        </div>
+
+        <button class="secondary" onclick="toggleBlackout()">🌙 وضع توفير الشاشة (إطفاء الإضاءة)</button>
+        <button class="danger" onclick="stopAll()">إيقاف البث والخروج</button>
+    </div>
+
+    <!-- 4. واجهة المستقبل (المراقب) -->
+    <div id="viewerScreen" class="card hidden">
+        <h2>👁️ شاشة المراقبة المباشرة</h2>
+        <div id="motionAlert" class="alert-banner hidden">⚠️ تنبيه: تم رصد حركة للطفل!</div>
+        
+        <div class="video-wrapper">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <span class="badge" id="viewerStatus">في انتظار البث...</span>
+        </div>
+
+        <div class="control-group">
+            <div class="control-header">
+                <span>التحكم عن بُعد: تقريب الكاميرا (Zoom)</span>
+                <span id="remoteZoomVal">1.0x</span>
+            </div>
+            <input type="range" id="remoteZoom" min="1" max="5" step="0.1" value="1" oninput="sendRemoteCommand('zoom', this.value)">
+
+            <div class="control-header" style="margin-top: 12px;">
+                <span>التحكم عن بُعد: حساسية الميكروفون</span>
+                <span id="remoteGainVal">1.5x</span>
+            </div>
+            <input type="range" id="remoteGain" min="1" max="5" step="0.2" value="1.5" oninput="sendRemoteCommand('gain', this.value)">
+
+            <div class="control-header" style="margin-top: 12px;">
+                <span>التحكم عن بُعد: حساسية كاشف الحركة</span>
+                <span id="remoteMotionVal">85%</span>
+            </div>
+            <input type="range" id="remoteMotion" min="50" max="98" step="1" value="85" oninput="sendRemoteCommand('motion', this.value)">
+        </div>
+
+        <button class="secondary" id="muteAlarmBtn" onclick="toggleAlarmMute()">🔔 صوت التنبيهات: مفعل</button>
+        <button class="danger" onclick="stopAll()">إنهاء المراقبة</button>
+    </div>
+</div>
+
+<!-- شاشة سوداء لتوفير البطارية في هاتف الطفل -->
+<div id="blackoutOverlay" class="blackout hidden" onclick="toggleBlackout()">
+    <p>الكاميرا تعمل وتراقب الحركة في الخلفية...</p>
+    <small>اضغط مرتين أو المس الشاشة للإظهار</small>
+</div>
+
+<!-- مكتبات Firebase -->
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getAuth, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+    import { getDatabase, ref, set, onValue, push, onChildAdded, remove, off } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+    // ==========================================
+    // ضع بيانات مشروع Firebase الخاصة بك هنا
+    // ==========================================
+    const firebaseConfig = {
+         apiKey: "AIzaSyBzwMdIxbh13ivsFfz7FxnNXaGMLu07MK8",
+  	authDomain: "baby-monitor-f4c03.firebaseapp.com",
+ 	 databaseURL: "https://baby-monitor-f4c03-default-rtdb.europe-west1.firebasedatabase.app",
+ 	 projectId: "baby-monitor-f4c03",
+  	storageBucket: "baby-monitor-f4c03.firebasestorage.app",
+ 	 messagingSenderId: "238568142525",
+ 	 appId: "1:238568142525:web:8f1f986915c433fecaa9d4",
+ 	 measurementId: "G-G6XRDX2GGY"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getDatabase(app);
+
+    // المتغيرات العامة
+    let roomId = "";
+    let pc = null;
+    let localStream = null;
+    let videoTrack = null;
+    let gainNode = null;
+    let dataChannel = null;
+    let motionSensitivity = 85;
+    let alarmMuted = false;
+    let motionInterval = null;
+    let wakeLock = null;
+
+    // خوادم STUN لتجاوز الراوتر والاتصال عبر الإنترنت من أي مكان
+    const rtcConfig = {
+        iceServers: [
+            { urls: "stun:stun.l.google.com:19302" },
+            { urls: "stun:stun1.l.google.com:19302" }
+        ]
+    };
+
+    // دالة تشفير SHA-256 لتوليد مفتاح غرفة مشفر من اليوزر + رمز 2FA
+    async function generateSecureRoomId(user, pin) {
+        const msgBuffer = new TextEncoder().encode(user.toLowerCase().trim() + "::" + pin.trim() + "::BABY_MONITOR_2FA");
+        const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 32);
+    }
+
+    // تسجيل الدخول
+    window.handleLogin = async () => {
+        const user = document.getElementById('username').value.trim();
+        const pass = document.getElementById('password').value;
+        const pin = document.getElementById('twoFactorPin').value.trim();
+        const errEl = document.getElementById('loginError');
+
+        if (!user || !pass || !pin) {
+            errEl.textContent = "يرجى إدخال اسم المستخدم وكلمة المرور ورمز الأمان الثاني.";
+            return;
+        }
+
+        // تحويل اسم المستخدم إلى صيغة بريد إلكتروني إذا لم يكن بريداً
+        const email = user.includes('@') ? user : `${user}@babymonitor.com`;
+        errEl.textContent = "جاري التحقق والتشفير...";
+
+        try {
+            await signInWithEmailAndPassword(auth, email, pass);
+            roomId = await generateSecureRoomId(email, pin);
+            errEl.textContent = "";
+            document.getElementById('loginScreen').classList.add('hidden');
+            document.getElementById('roleScreen').classList.remove('hidden');
+        } catch (error) {
+            errEl.textContent = "فشل الدخول: تأكد من اسم المستخدم وكلمة المرور.";
+        }
+    };
+
+    window.logout = async () => {
+        await signOut(auth);
+        location.reload();
+    };
+
+    // منع قفل شاشة الهاتف أثناء التشغيل
+    async function requestWakeLock() {
+        try {
+            if ('wakeLock' in navigator) {
+                wakeLock = await navigator.wakeLock.request('screen');
+            }
+        } catch (e) {}
+    }
+
+    // ==========================================
+    // وضع المرسل (كاميرا الطفل)
+    // ==========================================
+    window.startSenderMode = async () => {
+        document.getElementById('roleScreen').classList.add('hidden');
+        document.getElementById('senderScreen').classList.remove('hidden');
+        await requestWakeLock();
+        await loadCameras();
+        await initMediaAndStream();
+    };
+
+    async function loadCameras() {
+        // طلب إذن مبدئي لإظهار أسماء العدسات
+        const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        tempStream.getTracks().forEach(t => t.stop());
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+        const select = document.getElementById('cameraSelect');
+        select.innerHTML = '';
+        videoDevices.forEach((device, idx) => {
+            const opt = document.createElement('option');
+            opt.value = device.deviceId;
+            opt.text = device.label || `كاميرا ${idx + 1}`;
+            if (device.label.toLowerCase().includes('back') || device.label.toLowerCase().includes('خلفية')) {
+                opt.selected = true;
+            }
+            select.appendChild(opt);
+        });
+    }
+
+    async function initMediaAndStream(deviceId = null) {
+        if (localStream) localStream.getTracks().forEach(t => t.stop());
+
+        const selectedDeviceId = deviceId || document.getElementById('cameraSelect').value;
+        const rawStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
+            },
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: false
+            }
+        });
+
+        // معالجة الصوت وتضخيم حساسية الميكروفون (Web Audio API)
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioCtx.createMediaStreamSource(rawStream);
+        gainNode = audioCtx.createGain();
+        gainNode.gain.value = parseFloat(document.getElementById('senderGain').value);
+        const dest = audioCtx.createMediaStreamDestination();
+        source.connect(gainNode);
+        gainNode.connect(dest);
+
+        videoTrack = rawStream.getVideoTracks()[0];
+        const boostedAudioTrack = dest.stream.getAudioTracks()[0];
+        localStream = new MediaStream([videoTrack, boostedAudioTrack]);
+
+        const videoEl = document.getElementById('localVideo');
+        videoEl.srcObject = localStream;
+
+        // فحص دعم الزوم الحقيقي في العدسة
+        const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
+        const zoomInput = document.getElementById('senderZoom');
+        if (capabilities.zoom) {
+            zoomInput.min = capabilities.zoom.min;
+            zoomInput.max = capabilities.zoom.max;
+            zoomInput.step = capabilities.zoom.step || 0.1;
+        }
+
+        startMotionDetector(videoEl);
+        setupSenderWebRTC();
+    }
+
+    window.switchCamera = () => {
+        const deviceId = document.getElementById('cameraSelect').value;
+        initMediaAndStream(deviceId);
+    };
+
+    window.applyZoom = async (val) => {
+        document.getElementById('senderZoomVal').textContent = `${parseFloat(val).toFixed(1)}x`;
+        if (!videoTrack) return;
+        const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
+        if (capabilities.zoom) {
+            await videoTrack.applyConstraints({ advanced: [{ zoom: parseFloat(val) }] });
+        } else {
+            // زوم رقمي بديل في حال عدم دعم الهاردوير
+            document.getElementById('localVideo').style.transform = `scale(${val})`;
+        }
+    };
+
+    window.applyMicGain = (val) => {
+        document.getElementById('senderGainVal').textContent = `${parseFloat(val).toFixed(1)}x`;
+        if (gainNode) gainNode.gain.value = parseFloat(val);
+    };
+
+    window.updateMotionSensitivity = (val) => {
+        motionSensitivity = parseInt(val);
+        document.getElementById('senderMotionVal').textContent = `${val}%`;
+    };
+
+    // كاشف الحركة الدقيق (Pixel Difference Analysis)
+    function startMotionDetector(videoEl) {
+        if (motionInterval) clearInterval(motionInterval);
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        canvas.width = 160;
+        canvas.height = 90;
+        let prevFrame = null;
+        let lastAlertTime = 0;
+
+        motionInterval = setInterval(() => {
+            if (videoEl.readyState < 2) return;
+            ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+            const currentFrame = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+            if (prevFrame) {
+                let changedPixels = 0;
+                // تحويل الحساسية (50-98) إلى عتبة تغير لوني دقيقة
+                const colorThreshold = 110 - motionSensitivity; 
+
+                for (let i = 0; i < currentFrame.length; i += 4) {
+                    const diff = Math.abs(currentFrame[i] - prevFrame[i]) +
+                                 Math.abs(currentFrame[i+1] - prevFrame[i+1]) +
+                                 Math.abs(currentFrame[i+2] - prevFrame[i+2]);
+                    if (diff > colorThreshold) changedPixels++;
+                }
+
+                // إذا تغير أكثر من 0.4% من إطارات الصورة (يلتقط حركة يد أو رأس بسيطة)
+                const totalPixels = canvas.width * canvas.height;
+                if ((changedPixels / totalPixels) > 0.004) {
+                    const now = Date.now();
+                    if (now - lastAlertTime > 3000) {
+                        lastAlertTime = now;
+                        if (dataChannel && dataChannel.readyState === 'open') {
+                            dataChannel.send(JSON.stringify({ type: 'MOTION_ALERT' }));
+                        }
+                    }
+                }
+            }
+            prevFrame = new Uint8ClampedArray(currentFrame);
+        }, 300); // فحص كل 300 ملي ثانية
+    }
+
+    async function setupSenderWebRTC() {
+        const roomRef = ref(db, `rooms/${roomId}`);
+        await remove(roomRef); // تنظيف أي جلسة قديمة
+
+        pc = new RTCPeerConnection(rtcConfig);
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+        // قناة بيانات مشفرة لاستقبال أوامر التحكم وإرسال تنبيهات الحركة
+        dataChannel = pc.createDataChannel("control");
+        dataChannel.onmessage = (e) => {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'zoom') {
+                document.getElementById('senderZoom').value = msg.value;
+                applyZoom(msg.value);
+            } else if (msg.type === 'gain') {
+                document.getElementById('senderGain').value = msg.value;
+                applyMicGain(msg.value);
+            } else if (msg.type === 'motion') {
+                document.getElementById('senderMotion').value = msg.value;
+                updateMotionSensitivity(msg.value);
+            }
+        };
+
+        const offerCandidates = ref(db, `rooms/${roomId}/offerCandidates`);
+        const answerCandidates = ref(db, `rooms/${roomId}/answerCandidates`);
+
+        pc.onicecandidate = (e) => {
+            if (e.candidate) push(offerCandidates, e.candidate.toJSON());
+        };
+
+        pc.onconnectionstatechange = () => {
+            const status = document.getElementById('senderStatus');
+            if (pc.connectionState === 'connected') {
+                status.textContent = "🟢 متصل ومشفّر (E2EE)";
+                status.style.color = "#10b981";
+            } else {
+                status.textContent = "🟡 في انتظار جهاز المراقبة...";
+                status.style.color = "#f59e0b";
+            }
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await set(ref(db, `rooms/${roomId}/offer`), { sdp: offer.sdp, type: offer.type });
+
+        // الاستماع لرد جهاز المراقبة
+        onValue(ref(db, `rooms/${roomId}/answer`), async (snapshot) => {
+            const data = snapshot.val();
+            if (!pc.currentRemoteDescription && data) {
+                await pc.setRemoteDescription(new RTCSessionDescription(data));
+            }
+        });
+
+        onChildAdded(answerCandidates, (snapshot) => {
+            pc.addIceCandidate(new RTCIceCandidate(snapshot.val()));
+        });
+    }
+
+    window.toggleBlackout = () => {
+        document.getElementById('blackoutOverlay').classList.toggle('hidden');
+    };
+
+    // ==========================================
+    // وضع المستقبل (جهاز المراقبة)
+    // ==========================================
+    window.startViewerMode = async () => {
+        document.getElementById('roleScreen').classList.add('hidden');
+        document.getElementById('viewerScreen').classList.remove('hidden');
+        await requestWakeLock();
+        connectToSender();
+    };
+
+    function connectToSender() {
+        pc = new RTCPeerConnection(rtcConfig);
+
+        pc.ontrack = (event) => {
+            const remoteVideo = document.getElementById('remoteVideo');
+            if (remoteVideo.srcObject !== event.streams[0]) {
+                remoteVideo.srcObject = event.streams[0];
+            }
+        };
+
+        pc.ondatachannel = (event) => {
+            dataChannel = event.channel;
+            dataChannel.onmessage = (e) => {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'MOTION_ALERT') {
+                    triggerViewerAlert();
+                }
+            };
+        };
+
+        pc.onconnectionstatechange = () => {
+            const status = document.getElementById('viewerStatus');
+            if (pc.connectionState === 'connected') {
+                status.textContent = "🟢 بث مباشر مشفر";
+                status.style.color = "#10b981";
+            } else {
+                status.textContent = "🔴 غير متصل بالكاميرا";
+                status.style.color = "#ef4444";
+            }
+        };
+
+        const offerRef = ref(db, `rooms/${roomId}/offer`);
+        const offerCandidates = ref(db, `rooms/${roomId}/offerCandidates`);
+        const answerCandidates = ref(db, `rooms/${roomId}/answerCandidates`);
+
+        pc.onicecandidate = (e) => {
+            if (e.candidate) push(answerCandidates, e.candidate.toJSON());
+        };
+
+        onValue(offerRef, async (snapshot) => {
+            const offer = snapshot.val();
+            if (offer && !pc.currentRemoteDescription) {
+                await pc.setRemoteDescription(new RTCSessionDescription(offer));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                await set(ref(db, `rooms/${roomId}/answer`), { sdp: answer.sdp, type: answer.type });
+            }
+        });
+
+        onChildAdded(offerCandidates, (snapshot) => {
+            pc.addIceCandidate(new RTCIceCandidate(snapshot.val()));
+        });
+    }
+
+    window.sendRemoteCommand = (type, value) => {
+        if (type === 'zoom') {
+            document.getElementById('remoteZoomVal').textContent = `${parseFloat(value).toFixed(1)}x`;
+            // تطبيق زوم بصري محلي فوري بجانب إرسال الأمر للكاميرا
+            document.getElementById('remoteVideo').style.transform = `scale(${value})`;
+        } else if (type === 'gain') {
+            document.getElementById('remoteGainVal').textContent = `${parseFloat(value).toFixed(1)}x`;
+        } else if (type === 'motion') {
+            document.getElementById('remoteMotionVal').textContent = `${value}%`;
+        }
+
+        if (dataChannel && dataChannel.readyState === 'open') {
+            dataChannel.send(JSON.stringify({ type, value }));
+        }
+    };
+
+    // صوت تنبيه مولّد برمجياً بدون الحاجة لملفات صوت خارجية
+    function playBeep() {
+        if (alarmMuted) return;
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        gain.gain.setValueAtTime(0.3, ctx.currentTime);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.3);
+    }
+
+    let alertTimeout = null;
+    function triggerViewerAlert() {
+        const banner = document.getElementById('motionAlert');
+        banner.classList.remove('hidden');
+        playBeep();
+        if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
+        clearTimeout(alertTimeout);
+        alertTimeout = setTimeout(() => banner.classList.add('hidden'), 4000);
+    }
+
+    window.toggleAlarmMute = () => {
+        alarmMuted = !alarmMuted;
+        const btn = document.getElementById('muteAlarmBtn');
+        btn.textContent = alarmMuted ? "🔕 صوت التنبيهات: صامت" : "🔔 صوت التنبيهات: مفعل";
+    };
+
+    window.stopAll = () => {
+        if (motionInterval) clearInterval(motionInterval);
+        if (localStream) localStream.getTracks().forEach(t => t.stop());
+        if (pc) pc.close();
+        location.reload();
+    };
+</script>
+</body>
+</html>
