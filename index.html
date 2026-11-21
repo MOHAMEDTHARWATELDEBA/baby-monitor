@@ -104,6 +104,7 @@
             <video id="localVideo" autoplay playsinline muted></video>
             <span class="badge" id="senderStatus">جاري التهيئة...</span>
         </div>
+        <div id="senderDiag" class="status-text" style="margin:-4px 0 14px;"></div>
 
         <div class="control-group">
             <label>اختيار عدسة الكاميرا (Lens)</label>
@@ -143,6 +144,7 @@
             <video id="remoteVideo" autoplay playsinline></video>
             <span class="badge" id="viewerStatus">في انتظار البث...</span>
         </div>
+        <div id="viewerDiag" class="status-text" style="margin:-4px 0 14px;"></div>
 
         <button id="unmuteBtn" class="success hidden" onclick="unmuteRemote()">🔊 اضغط لتفعيل الصوت</button>
 
@@ -198,6 +200,10 @@
     const db = getDatabase(app);
 
     const $ = (id) => document.getElementById(id);
+    const roomTag = () => (roomId || '').slice(0, 6);
+    const diagViewer = (t) => { $('viewerDiag').textContent = `${t} | رمز الغرفة: ${roomTag()}`; };
+    const diagSender = (t) => { $('senderDiag').textContent = `${t} | رمز الغرفة: ${roomTag()}`; };
+    let noOfferTimer = null;
     const newSid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
     let roomId = "";
@@ -433,6 +439,7 @@
         try {
             await setupSenderWebRTC();
             listenForViewerJoin();
+            diagSender("الكاميرا جاهزة وتنتظر المراقب");
         } catch (e) { signalingError(e); }
     }
 
@@ -598,6 +605,8 @@
             }
         };
 
+        peer.oniceconnectionstatechange = () => { if (peer === pc) diagSender(`حالة الشبكة (ICE): ${peer.iceConnectionState}`); };
+
         const offer = await peer.createOffer();
         await peer.setLocalDescription(offer);
         if (gen !== setupGen) return;
@@ -610,6 +619,7 @@
                 if (!data || data.sid !== sid || peer !== pc || peer.signalingState !== 'have-local-offer') return;
                 try {
                     await peer.setRemoteDescription({ type: data.type, sdp: data.sdp });
+                    diagSender("تم استلام رد المراقب");
                     for (const c of pending.splice(0)) await peer.addIceCandidate(c).catch(() => {});
                 } catch (e) { console.warn(e); }
             }, signalingError),
@@ -628,7 +638,10 @@
         if (joinListenerAttached) return;
         joinListenerAttached = true;
         onValue(ref(db, `rooms/${roomId}/viewerJoin`), (snap) => {
-            if (snap.exists() && role === 'sender') setupSenderWebRTC().catch(signalingError);
+            if (snap.exists() && role === 'sender') {
+                diagSender("مراقب يحاول الاتصال...");
+                setupSenderWebRTC().catch(signalingError);
+            }
         }, signalingError);
     }
 
@@ -736,6 +749,9 @@
                 setViewerStatus("🟡 جاري الاتصال...", "#f59e0b");
             }
         };
+        peer.oniceconnectionstatechange = () => {
+            if (peer === pc) diagViewer(`حالة الشبكة (ICE): ${peer.iceConnectionState}`);
+        };
         return peer;
     }
 
@@ -744,6 +760,9 @@
         if (viewerSid !== null) createViewerPeer();   // عرض جديد = اتصال جديد
         viewerSid = offer.sid;
         const peer = pc;
+        clearTimeout(noOfferTimer);
+        setViewerStatus("🟡 تم العثور على الكاميرا، جاري الاتصال...", "#f59e0b");
+        diagViewer("تم استلام العرض من الكاميرا");
 
         await peer.setRemoteDescription({ type: offer.type, sdp: offer.sdp });
         const ready = viewerPending.filter(c => c.sid === viewerSid);
@@ -756,6 +775,7 @@
         await peer.setLocalDescription(answer);
         if (peer !== pc) return;
         await set(ref(db, `rooms/${roomId}/answer`), { type: answer.type, sdp: answer.sdp, sid: viewerSid });
+        diagViewer("تم إرسال الرد، جاري تأسيس الاتصال");
     }
 
     function connectToSender() {
@@ -766,12 +786,18 @@
         viewerPending = [];
         createViewerPeer();
         setViewerStatus("🟡 في انتظار الكاميرا...", "#f59e0b");
+        diagViewer("متصل بالخادم، جاري البحث عن الكاميرا");
+        clearTimeout(noOfferTimer);
+        noOfferTimer = setTimeout(() => {
+            if (viewerSid === null) diagViewer("⚠️ لا توجد كاميرا شغالة في هذه الغرفة. تأكد أن الجهاز الآخر في وضع الكاميرا وبنفس اسم المستخدم والرمز السري، وحدّث الصفحة على الجهازين");
+        }, 8000);
 
         viewerUnsubs.push(
             onValue(ref(db, `rooms/${roomId}/offer`), (snap) => {
                 const offer = snap.val();
-                if (!offer || !offer.sid) return;
-                viewerQueue = viewerQueue.then(() => handleOffer(offer)).catch(e => console.warn(e));
+                if (!offer) return;
+                if (!offer.sid) { diagViewer("⚠️ الكاميرا تعمل بنسخة قديمة من الملف، حدّث الصفحة عليها (Ctrl+F5) وأعد تشغيل وضع الكاميرا"); return; }
+                viewerQueue = viewerQueue.then(() => handleOffer(offer)).catch(e => { console.warn(e); diagViewer("❌ خطأ في الاتصال: " + (e.message || e)); });
             }, viewerSignalingError),
             onChildAdded(ref(db, `rooms/${roomId}/offerCandidates`), (snap) => {
                 const c = snap.val();
