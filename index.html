@@ -144,6 +144,8 @@
             <span class="badge" id="viewerStatus">في انتظار البث...</span>
         </div>
 
+        <button id="unmuteBtn" class="success hidden" onclick="unmuteRemote()">🔊 اضغط لتفعيل الصوت</button>
+
         <div class="control-group">
             <div class="control-header">
                 <span>التحكم عن بُعد: تقريب الكاميرا (Zoom)</span>
@@ -180,377 +182,661 @@
     import { getAuth, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
     import { getDatabase, ref, set, onValue, push, onChildAdded, remove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
-    // ==========================================
-    // ضع بيانات مشروع Firebase الخاصة بك هنا
-    // ==========================================
-    // For Firebase JS SDK v7.20.0 and later, measurementId is optional
-const firebaseConfig = {
-  apiKey: "AIzaSyBzwMdIxbh13ivsFfz7FxnNXaGMLu07MK8",
-  authDomain: "baby-monitor-f4c03.firebaseapp.com",
-  databaseURL: "https://baby-monitor-f4c03-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "baby-monitor-f4c03",
-  storageBucket: "baby-monitor-f4c03.firebasestorage.app",
-  messagingSenderId: "238568142525",
-  appId: "1:238568142525:web:8f1f986915c433fecaa9d4",
-  measurementId: "G-G6XRDX2GGY"
-};
+    const firebaseConfig = {
+        apiKey: "AIzaSyBzwMdIxbh13ivsFfz7FxnNXaGMLu07MK8",
+        authDomain: "baby-monitor-f4c03.firebaseapp.com",
+        databaseURL: "https://baby-monitor-f4c03-default-rtdb.europe-west1.firebasedatabase.app",
+        projectId: "baby-monitor-f4c03",
+        storageBucket: "baby-monitor-f4c03.firebasestorage.app",
+        messagingSenderId: "238568142525",
+        appId: "1:238568142525:web:8f1f986915c433fecaa9d4",
+        measurementId: "G-G6XRDX2GGY"
+    };
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getDatabase(app);
 
-    let roomId = "";
-    let pc = null;
-    let localStream = null;
-    let videoTrack = null;
-    let gainNode = null;
-    let dataChannel = null;
-    let motionSensitivity = 85;
-    let alarmMuted = false;
-    let motionInterval = null;
-    let wakeLock = null;
+    const $ = (id) => document.getElementById(id);
+    const newSid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
+    let roomId = "";
+    let role = null;               // 'sender' | 'viewer'
+    let pc = null;
+    let dataChannel = null;
+    let wakeLock = null;
+    let alarmMuted = false;
+    let alarmCtx = null;
+
+    // المرسل
+    let localStream = null, videoTrack = null, audioTrack = null, rawMicTrack = null;
+    let audioCtx = null, gainNode = null;
+    let motionSensitivity = 85, motionInterval = null, prevFrame = null, lastAlert = 0;
+    let setupGen = 0, senderUnsubs = [], joinListenerAttached = false;
+
+    // المراقب
+    let viewerUnsubs = [], viewerSid = null, viewerPending = [];
+    let viewerQueue = Promise.resolve(), viewerRetryTimer = null, hardwareZoomRemote = false;
+
+    // STUN + TURN (ضروري للاتصال عبر بيانات الموبايل / شبكات مختلفة)
     const rtcConfig = {
         iceServers: [
             { urls: "stun:stun.l.google.com:19302" },
-            { urls: "stun:stun1.l.google.com:19302" }
+            { urls: "stun:stun1.l.google.com:19302" },
+            { urls: ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443", "turn:openrelay.metered.ca:443?transport=tcp"],
+              username: "openrelayproject", credential: "openrelayproject" }
         ]
     };
 
+    // ==========================================
+    // تسجيل الدخول
+    // ==========================================
     async function generateSecureRoomId(user, pin) {
-        const msgBuffer = new TextEncoder().encode(user.toLowerCase().trim() + "::" + pin.trim() + "::BABY_MONITOR_2FA");
-        const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 32);
+        const buf = new TextEncoder().encode(user.toLowerCase().trim() + "::" + pin.trim() + "::BABY_MONITOR_2FA");
+        const hash = await crypto.subtle.digest('SHA-256', buf);
+        return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 32);
     }
 
+    const AUTH_ERRORS = {
+        'auth/invalid-credential': 'اسم المستخدم أو كلمة المرور غير صحيحة',
+        'auth/wrong-password': 'كلمة المرور غير صحيحة',
+        'auth/user-not-found': 'المستخدم غير موجود',
+        'auth/invalid-email': 'صيغة اسم المستخدم غير صحيحة',
+        'auth/too-many-requests': 'محاولات كثيرة، حاول لاحقاً',
+        'auth/network-request-failed': 'لا يوجد اتصال بالإنترنت',
+        'auth/operation-not-allowed': 'تسجيل الدخول بالبريد/كلمة المرور غير مُفعّل في Firebase'
+    };
+
     window.handleLogin = async () => {
-        const user = document.getElementById('username').value.trim();
-        const pass = document.getElementById('password').value;
-        const pin = document.getElementById('twoFactorPin').value.trim();
-        const errEl = document.getElementById('loginError');
+        const user = $('username').value.trim();
+        const pass = $('password').value;
+        const pin = $('twoFactorPin').value.trim();
+        const errEl = $('loginError');
+        const btn = $('loginBtn');
 
         if (!user || !pass || !pin) {
             errEl.textContent = "يرجى إدخال اسم المستخدم وكلمة المرور ورمز الأمان الثاني.";
             return;
         }
-
         const email = user.includes('@') ? user : `${user}@babymonitor.com`;
+        errEl.style.color = "var(--muted)";
         errEl.textContent = "جاري التحقق والتشفير...";
-
+        btn.disabled = true;
         try {
             await signInWithEmailAndPassword(auth, email, pass);
             roomId = await generateSecureRoomId(email, pin);
             errEl.textContent = "";
-            document.getElementById('loginScreen').classList.add('hidden');
-            document.getElementById('roleScreen').classList.remove('hidden');
+            $('loginScreen').classList.add('hidden');
+            $('roleScreen').classList.remove('hidden');
         } catch (error) {
-            errEl.textContent = "فشل الدخول: " + (error.message || "تأكد من البيانات");
+            errEl.style.color = "var(--danger)";
+            errEl.textContent = "فشل الدخول: " + (AUTH_ERRORS[error.code] || error.message || "تأكد من البيانات");
+        } finally {
+            btn.disabled = false;
         }
     };
 
+    ['username', 'password', 'twoFactorPin'].forEach(id =>
+        $(id).addEventListener('keydown', e => { if (e.key === 'Enter') window.handleLogin(); }));
+
     window.logout = async () => {
-        await signOut(auth);
+        try { await signOut(auth); } catch (e) {}
         location.reload();
     };
 
     async function requestWakeLock() {
         try {
-            if ('wakeLock' in navigator) {
+            if ('wakeLock' in navigator && !wakeLock) {
                 wakeLock = await navigator.wakeLock.request('screen');
+                wakeLock.addEventListener('release', () => { wakeLock = null; });
             }
         } catch (e) {}
     }
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && role) requestWakeLock();
+    });
 
     // ==========================================
     // وضع المرسل (كاميرا الطفل)
     // ==========================================
-    // ==========================================
-    // وضع المرسل (كاميرا الطفل) - نسخة مضادة للتعليق
-    // ==========================================
+    function cameraErrorText(err) {
+        const map = {
+            NotAllowedError: 'تم رفض إذن الكاميرا',
+            NotFoundError: 'لا توجد كاميرا في الجهاز',
+            NotReadableError: 'الكاميرا مستخدمة في تطبيق آخر',
+            OverconstrainedError: 'العدسة غير مدعومة'
+        };
+        return map[err.name] || err.name || err.message || 'غير معروف';
+    }
+
+    function setSenderStatus(text, color) {
+        const el = $('senderStatus');
+        el.textContent = text;
+        el.style.color = color;
+    }
+
+    function signalingError(e) {
+        console.error(e);
+        const denied = e && /PERMISSION_DENIED/i.test(e.message || e.code || '');
+        setSenderStatus(denied ? "❌ قواعد Firebase ترفض الوصول (راجع Rules)" : "❌ فشل الاتصال بقاعدة البيانات", "#ef4444");
+    }
+
     window.startSenderMode = async () => {
-        document.getElementById('roleScreen').classList.add('hidden');
-        document.getElementById('senderScreen').classList.remove('hidden');
-        const statusEl = document.getElementById('senderStatus');
-        statusEl.textContent = "جاري تشغيل الكاميرا...";
-        statusEl.style.color = "#f59e0b";
+        role = 'sender';
+        $('roleScreen').classList.add('hidden');
+        $('senderScreen').classList.remove('hidden');
+        setSenderStatus("جاري تشغيل الكاميرا...", "#f59e0b");
 
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            statusEl.textContent = "❌ المتصفح لا يدعم الكاميرا (يلزم HTTPS)";
-            statusEl.style.color = "#ef4444";
+            setSenderStatus("❌ المتصفح لا يدعم الكاميرا (يلزم HTTPS)", "#ef4444");
             return;
         }
-
         await requestWakeLock();
-        await initMediaAndStream(null, true);
+        await initMediaAndStream();
     };
+
+    async function acquireMedia(deviceId, withAudio) {
+        const videoOptions = [];
+        if (deviceId) videoOptions.push({ deviceId: { exact: deviceId } });
+        videoOptions.push({ facingMode: { ideal: "environment" } });
+        videoOptions.push(true);
+        let lastErr;
+        for (const video of videoOptions) {
+            for (const audio of (withAudio ? [true, false] : [false])) {
+                try { return await navigator.mediaDevices.getUserMedia({ video, audio }); }
+                catch (e) { lastErr = e; }
+            }
+            if (lastErr && lastErr.name === 'NotAllowedError') break;
+        }
+        throw lastErr;
+    }
+
+    function rebuildLocalStream() {
+        localStream = new MediaStream([videoTrack, audioTrack].filter(Boolean));
+        $('localVideo').srcObject = localStream;
+        $('localVideo').play().catch(() => {});
+    }
+
+    function getZoomCaps() {
+        try {
+            const c = videoTrack && videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
+            return c.zoom || null;
+        } catch (e) { return null; }
+    }
+
+    function setupZoomUI() {
+        const input = $('senderZoom');
+        const z = getZoomCaps();
+        $('localVideo').style.transform = '';
+        if (z) {
+            input.min = z.min; input.max = z.max; input.step = z.step || 0.1;
+            let cur = 1;
+            try { cur = videoTrack.getSettings().zoom || z.min; } catch (e) {}
+            input.value = cur;
+        } else {
+            input.min = 1; input.max = 5; input.step = 0.1; input.value = 1;
+        }
+        $('senderZoomVal').textContent = `${parseFloat(input.value).toFixed(1)}x`;
+    }
 
     async function populateCameraList() {
         try {
-            if (!navigator.mediaDevices.enumerateDevices) return;
             const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(d => d.kind === 'videoinput');
-            const select = document.getElementById('cameraSelect');
-            if (!videoDevices.length) return;
-
-            const currentVal = select.value;
+            const cams = devices.filter(d => d.kind === 'videoinput');
+            if (!cams.length) return;
+            let activeId = '';
+            try { activeId = videoTrack.getSettings().deviceId || ''; } catch (e) {}
+            const select = $('cameraSelect');
             select.innerHTML = '';
-
-            videoDevices.forEach((device, idx) => {
+            cams.forEach((d, i) => {
                 const opt = document.createElement('option');
-                opt.value = device.deviceId;
-                opt.text = device.label || `عدسة ${idx + 1}`;
-                if (currentVal && device.deviceId === currentVal) {
-                    opt.selected = true;
-                } else if (!currentVal && /back|rear|environment|خلفية/i.test(device.label)) {
-                    opt.selected = true;
-                }
+                opt.value = d.deviceId;
+                opt.text = d.label || `عدسة ${i + 1}`;
+                if (d.deviceId === activeId) opt.selected = true;
                 select.appendChild(opt);
             });
-        } catch (e) {
-            // تجاهل فشل تعداد العدسات حتى لا يعطل البث الأساسي
-        }
+        } catch (e) {}
     }
 
-    async function initMediaAndStream(deviceId = null, firstTime = false) {
-        const statusEl = document.getElementById('senderStatus');
+    async function initMediaAndStream() {
         try {
-            if (localStream) {
-                localStream.getTracks().forEach(t => t.stop());
-            }
+            const raw = await acquireMedia(null, true);
+            videoTrack = raw.getVideoTracks()[0];
+            rawMicTrack = raw.getAudioTracks()[0] || null;
+            audioTrack = rawMicTrack;
 
-            const videoConstraint = deviceId
-                ? { deviceId: { ideal: deviceId } }
-                : { facingMode: { ideal: "environment" } };
-
-            let rawStream;
-            try {
-                rawStream = await navigator.mediaDevices.getUserMedia({
-                    video: videoConstraint,
-                    audio: true
-                });
-            } catch (audioErr) {
-                // محاولة تشغيل الكاميرا فقط إذا كان الميكروفون يسبب تعارضاً
-                rawStream = await navigator.mediaDevices.getUserMedia({
-                    video: videoConstraint,
-                    audio: false
-                });
-            }
-
-            videoTrack = rawStream.getVideoTracks()[0];
-            const audioTracks = rawStream.getAudioTracks();
-
-            let finalAudioTrack = null;
-            if (audioTracks.length > 0) {
+            if (rawMicTrack) {
                 try {
-                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                    const audioCtx = new AudioCtx();
-                    if (audioCtx.state === 'suspended') {
-                        await audioCtx.resume();
-                    }
-                    const source = audioCtx.createMediaStreamSource(rawStream);
+                    const Ctx = window.AudioContext || window.webkitAudioContext;
+                    audioCtx = new Ctx();
+                    if (audioCtx.state === 'suspended') await audioCtx.resume();
+                    const source = audioCtx.createMediaStreamSource(new MediaStream([rawMicTrack]));
                     gainNode = audioCtx.createGain();
-                    gainNode.gain.value = parseFloat(document.getElementById('senderGain').value) || 1.5;
+                    gainNode.gain.value = parseFloat($('senderGain').value) || 1.5;
                     const dest = audioCtx.createMediaStreamDestination();
                     source.connect(gainNode);
                     gainNode.connect(dest);
-                    finalAudioTrack = dest.stream.getAudioTracks()[0] || audioTracks[0];
-                } catch (audioCtxErr) {
-                    finalAudioTrack = audioTracks[0];
+                    audioTrack = dest.stream.getAudioTracks()[0] || rawMicTrack;
+                } catch (e) { audioTrack = rawMicTrack; gainNode = null; }
+            }
+
+            rebuildLocalStream();
+            setupZoomUI();
+            await populateCameraList();
+            startMotionDetector($('localVideo'));
+        } catch (err) {
+            setSenderStatus("❌ خطأ كاميرا: " + cameraErrorText(err), "#ef4444");
+            return;
+        }
+
+        setSenderStatus("🟡 في انتظار جهاز المراقبة...", "#f59e0b");
+        try {
+            await setupSenderWebRTC();
+            listenForViewerJoin();
+        } catch (e) { signalingError(e); }
+    }
+
+    // تبديل العدسة بدون إعادة الاتصال (replaceTrack)
+    window.switchCamera = async () => {
+        const deviceId = $('cameraSelect').value;
+        if (!deviceId || !videoTrack) return;
+        const oldTrack = videoTrack;
+        oldTrack.stop();
+        let stream;
+        try { stream = await acquireMedia(deviceId, false); }
+        catch (e) {
+            try { stream = await acquireMedia(null, false); }
+            catch (e2) { setSenderStatus("❌ تعذر تبديل العدسة: " + cameraErrorText(e2), "#ef4444"); return; }
+        }
+        videoTrack = stream.getVideoTracks()[0];
+        rebuildLocalStream();
+        try {
+            if (pc) {
+                const s = pc.getSenders().find(x => x.track === oldTrack);
+                if (s) await s.replaceTrack(videoTrack);
+            }
+        } catch (e) { console.warn(e); }
+        setupZoomUI();
+        prevFrame = null;
+        sendCaps();
+        populateCameraList();
+    };
+
+    window.applyZoom = async (v) => {
+        const val = parseFloat(v);
+        if (!isFinite(val)) return;
+        $('senderZoomVal').textContent = `${val.toFixed(1)}x`;
+        if (!videoTrack) return;
+        if (getZoomCaps()) {
+            try { await videoTrack.applyConstraints({ advanced: [{ zoom: val }] }); } catch (e) {}
+        } else {
+            $('localVideo').style.transform = `scale(${val})`;
+        }
+    };
+
+    window.applyMicGain = (v) => {
+        const val = parseFloat(v);
+        if (!isFinite(val)) return;
+        $('senderGainVal').textContent = `${val.toFixed(1)}x`;
+        if (gainNode) gainNode.gain.value = val;
+    };
+
+    window.updateMotionSensitivity = (v) => {
+        const val = parseInt(v, 10);
+        if (!isFinite(val)) return;
+        motionSensitivity = val;
+        $('senderMotionVal').textContent = `${val}%`;
+    };
+
+    // كاشف الحركة: مقارنة إطارات صغيرة رمادية كل نصف ثانية
+    function startMotionDetector(videoEl) {
+        if (motionInterval) clearInterval(motionInterval);
+        const W = 64, H = 48;
+        const canvas = document.createElement('canvas');
+        canvas.width = W; canvas.height = H;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        prevFrame = null;
+
+        motionInterval = setInterval(() => {
+            if (videoEl.readyState < 2 || !videoEl.videoWidth) return;
+            ctx.drawImage(videoEl, 0, 0, W, H);
+            const data = ctx.getImageData(0, 0, W, H).data;
+            const gray = new Uint8Array(W * H);
+            for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+                gray[j] = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) | 0;
+            }
+            if (prevFrame) {
+                const pixelThreshold = Math.max(8, (100 - motionSensitivity) * 1.2);
+                const ratioThreshold = Math.max(0.3, (100 - motionSensitivity) / 10);
+                let changed = 0;
+                for (let k = 0; k < gray.length; k++) {
+                    if (Math.abs(gray[k] - prevFrame[k]) > pixelThreshold) changed++;
+                }
+                const ratio = (changed / gray.length) * 100;
+                if (ratio > ratioThreshold && Date.now() - lastAlert > 5000) {
+                    lastAlert = Date.now();
+                    if (dataChannel && dataChannel.readyState === 'open') {
+                        dataChannel.send(JSON.stringify({ type: 'MOTION_ALERT' }));
+                    }
                 }
             }
+            prevFrame = gray;
+        }, 500);
+    }
 
-            const tracks = [videoTrack];
-            if (finalAudioTrack) tracks.push(finalAudioTrack);
-            localStream = new MediaStream(tracks);
+    function sendCaps() {
+        if (!dataChannel || dataChannel.readyState !== 'open') return;
+        const z = getZoomCaps();
+        dataChannel.send(JSON.stringify({
+            type: 'caps',
+            zoom: z ? { min: z.min, max: z.max, step: z.step || 0.1 } : null,
+            zoomValue: $('senderZoom').value,
+            gain: $('senderGain').value,
+            motion: $('senderMotion').value
+        }));
+    }
 
-            const videoEl = document.getElementById('localVideo');
-            videoEl.srcObject = localStream;
-            await videoEl.play().catch(() => {});
+    function handleSenderCommand(e) {
+        let msg;
+        try { msg = JSON.parse(e.data); } catch (err) { return; }
+        if (msg.type === 'hello') { sendCaps(); return; }
+        const val = parseFloat(msg.value);
+        if (!isFinite(val)) return;
+        if (msg.type === 'zoom') { const el = $('senderZoom'); el.value = val; window.applyZoom(el.value); }
+        else if (msg.type === 'gain') { const el = $('senderGain'); el.value = val; window.applyMicGain(el.value); }
+        else if (msg.type === 'motion') { const el = $('senderMotion'); el.value = val; window.updateMotionSensitivity(el.value); }
+    }
 
-            if (firstTime) {
-                await populateCameraList();
-            }
-
-            const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
-            const zoomInput = document.getElementById('senderZoom');
-            if (capabilities.zoom) {
-                zoomInput.min = capabilities.zoom.min;
-                zoomInput.max = capabilities.zoom.max;
-                zoomInput.step = capabilities.zoom.step || 0.1;
-            }
-
-            startMotionDetector(videoEl);
-
-            statusEl.textContent = "🟡 في انتظار جهاز المراقبة...";
-            statusEl.style.color = "#f59e0b";
-
-            await setupSenderWebRTC();
-        } catch (err) {
-            statusEl.textContent = "❌ خطأ كاميرا: " + (err.name || err.message || "غير معروف");
-            statusEl.style.color = "#ef4444";
-        }
+    function cleanupSenderSignaling() {
+        senderUnsubs.forEach(u => { try { u(); } catch (e) {} });
+        senderUnsubs = [];
     }
 
     async function setupSenderWebRTC() {
-        if (pc) pc.close();
-        const roomRef = ref(db, `rooms/${roomId}`);
-        await remove(roomRef);
+        const gen = ++setupGen;
+        cleanupSenderSignaling();
+        if (pc) { pc.onconnectionstatechange = null; pc.onicecandidate = null; pc.close(); pc = null; }
 
-        pc = new RTCPeerConnection(rtcConfig);
-        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+        await remove(ref(db, `rooms/${roomId}`));
+        if (gen !== setupGen) return;
 
-        dataChannel = pc.createDataChannel("control");
-        dataChannel.onmessage = (e) => {
-            const msg = JSON.parse(e.data);
-            if (msg.type === 'zoom') {
-                document.getElementById('senderZoom').value = msg.value;
-                applyZoom(msg.value);
-            } else if (msg.type === 'gain') {
-                document.getElementById('senderGain').value = msg.value;
-                applyMicGain(msg.value);
-            } else if (msg.type === 'motion') {
-                document.getElementById('senderMotion').value = msg.value;
-                updateMotionSensitivity(msg.value);
-            }
-        };
+        const sid = newSid();
+        const pending = [];
+        const peer = new RTCPeerConnection(rtcConfig);
+        pc = peer;
+        localStream.getTracks().forEach(t => peer.addTrack(t, localStream));
+
+        const channel = peer.createDataChannel("control");
+        dataChannel = channel;
+        channel.onopen = () => sendCaps();
+        channel.onmessage = handleSenderCommand;
 
         const offerCandidates = ref(db, `rooms/${roomId}/offerCandidates`);
         const answerCandidates = ref(db, `rooms/${roomId}/answerCandidates`);
 
-        pc.onicecandidate = (e) => {
-            if (e.candidate) push(offerCandidates, e.candidate.toJSON());
+        peer.onicecandidate = (e) => {
+            if (e.candidate) Promise.resolve(push(offerCandidates, { ...e.candidate.toJSON(), sid })).catch(() => {});
         };
 
-        pc.onconnectionstatechange = () => {
-            const status = document.getElementById('senderStatus');
-            if (pc.connectionState === 'connected') {
-                status.textContent = "🟢 متصل ومشفّر (E2EE)";
-                status.style.color = "#10b981";
-            } else {
-                status.textContent = "🟡 في انتظار جهاز المراقبة...";
-                status.style.color = "#f59e0b";
+        let dropTimer = null;
+        peer.onconnectionstatechange = () => {
+            if (peer !== pc) return;
+            clearTimeout(dropTimer);
+            const st = peer.connectionState;
+            if (st === 'connected') {
+                setSenderStatus("🟢 متصل ومشفّر (DTLS-SRTP)", "#10b981");
+            } else if (st === 'failed') {
+                setSenderStatus("🔴 انقطع الاتصال، جاري إعادة المحاولة...", "#ef4444");
+                dropTimer = setTimeout(() => { if (peer === pc) setupSenderWebRTC().catch(signalingError); }, 2000);
+            } else if (st === 'disconnected') {
+                setSenderStatus("🟡 الاتصال ضعيف...", "#f59e0b");
+                dropTimer = setTimeout(() => {
+                    if (peer === pc && peer.connectionState !== 'connected') setupSenderWebRTC().catch(signalingError);
+                }, 8000);
+            } else if (st !== 'closed') {
+                setSenderStatus("🟡 في انتظار جهاز المراقبة...", "#f59e0b");
             }
         };
 
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        await set(ref(db, `rooms/${roomId}/offer`), { sdp: offer.sdp, type: offer.type });
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+        if (gen !== setupGen) return;
+        await set(ref(db, `rooms/${roomId}/offer`), { sdp: offer.sdp, type: offer.type, sid });
+        if (gen !== setupGen) return;
 
-        onValue(ref(db, `rooms/${roomId}/answer`), async (snapshot) => {
-            const data = snapshot.val();
-            if (!pc.currentRemoteDescription && data) {
-                await pc.setRemoteDescription(new RTCSessionDescription(data));
-            }
-        });
+        senderUnsubs.push(
+            onValue(ref(db, `rooms/${roomId}/answer`), async (snap) => {
+                const data = snap.val();
+                if (!data || data.sid !== sid || peer !== pc || peer.signalingState !== 'have-local-offer') return;
+                try {
+                    await peer.setRemoteDescription({ type: data.type, sdp: data.sdp });
+                    for (const c of pending.splice(0)) await peer.addIceCandidate(c).catch(() => {});
+                } catch (e) { console.warn(e); }
+            }, signalingError),
+            onChildAdded(answerCandidates, (snap) => {
+                const c = snap.val();
+                if (!c || c.sid !== sid || peer !== pc) return;
+                const { sid: _s, ...cand } = c;
+                if (peer.remoteDescription) peer.addIceCandidate(cand).catch(() => {});
+                else pending.push(cand);
+            }, signalingError)
+        );
+    }
 
-        onChildAdded(answerCandidates, (snapshot) => {
-            pc.addIceCandidate(new RTCIceCandidate(snapshot.val()));
-        });
+    // عند دخول مراقب جديد (أو إعادة تحميل صفحته) يُنشأ عرض اتصال جديد
+    function listenForViewerJoin() {
+        if (joinListenerAttached) return;
+        joinListenerAttached = true;
+        onValue(ref(db, `rooms/${roomId}/viewerJoin`), (snap) => {
+            if (snap.exists() && role === 'sender') setupSenderWebRTC().catch(signalingError);
+        }, signalingError);
     }
 
     window.toggleBlackout = () => {
-        document.getElementById('blackoutOverlay').classList.toggle('hidden');
+        $('blackoutOverlay').classList.toggle('hidden');
     };
 
     // ==========================================
     // وضع المستقبل (جهاز المراقبة)
     // ==========================================
+    function setViewerStatus(text, color) {
+        const el = $('viewerStatus');
+        el.textContent = text;
+        el.style.color = color;
+    }
+
+    function viewerSignalingError(e) {
+        console.error(e);
+        const denied = e && /PERMISSION_DENIED/i.test(e.message || e.code || '');
+        setViewerStatus(denied ? "❌ قواعد Firebase ترفض الوصول" : "❌ فشل الاتصال بقاعدة البيانات", "#ef4444");
+    }
+
     window.startViewerMode = async () => {
-        document.getElementById('roleScreen').classList.add('hidden');
-        document.getElementById('viewerScreen').classList.remove('hidden');
+        role = 'viewer';
+        $('roleScreen').classList.add('hidden');
+        $('viewerScreen').classList.remove('hidden');
+        try {   // يُنشأ أثناء ضغطة المستخدم ليسمح المتصفح بصوت التنبيه لاحقاً
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            alarmCtx = new Ctx();
+            alarmCtx.resume();
+        } catch (e) {}
         await requestWakeLock();
         connectToSender();
     };
 
+    function handleViewerMessage(e) {
+        let msg;
+        try { msg = JSON.parse(e.data); } catch (err) { return; }
+        if (msg.type === 'MOTION_ALERT') triggerViewerAlert();
+        else if (msg.type === 'caps') applyRemoteCaps(msg);
+    }
+
+    function applyRemoteCaps(msg) {
+        const zoomEl = $('remoteZoom');
+        hardwareZoomRemote = !!msg.zoom;
+        if (msg.zoom) {
+            zoomEl.min = msg.zoom.min; zoomEl.max = msg.zoom.max; zoomEl.step = msg.zoom.step || 0.1;
+            if (msg.zoomValue != null) zoomEl.value = msg.zoomValue;
+            $('remoteVideo').style.transform = '';
+        } else {
+            zoomEl.min = 1; zoomEl.max = 5; zoomEl.step = 0.1;
+        }
+        $('remoteZoomVal').textContent = `${parseFloat(zoomEl.value).toFixed(1)}x`;
+        if (msg.gain != null) { $('remoteGain').value = msg.gain; $('remoteGainVal').textContent = `${parseFloat(msg.gain).toFixed(1)}x`; }
+        if (msg.motion != null) { $('remoteMotion').value = msg.motion; $('remoteMotionVal').textContent = `${msg.motion}%`; }
+    }
+
+    function createViewerPeer() {
+        if (pc) {
+            pc.onconnectionstatechange = null; pc.onicecandidate = null; pc.ontrack = null; pc.ondatachannel = null;
+            pc.close();
+        }
+        const peer = new RTCPeerConnection(rtcConfig);
+        pc = peer;
+
+        peer.ontrack = (event) => {
+            const video = $('remoteVideo');
+            const stream = event.streams[0];
+            if (!stream || video.srcObject === stream) return;
+            video.srcObject = stream;
+            video.play().catch(() => {   // سياسة التشغيل التلقائي: شغّل بدون صوت ثم اطلب التفعيل
+                video.muted = true;
+                video.play().catch(() => {});
+                $('unmuteBtn').classList.remove('hidden');
+            });
+        };
+
+        peer.ondatachannel = (event) => {
+            const ch = event.channel;
+            dataChannel = ch;
+            ch.onmessage = handleViewerMessage;
+            const hello = () => ch.send(JSON.stringify({ type: 'hello' }));
+            ch.onopen = hello;
+            if (ch.readyState === 'open') hello();
+        };
+
+        peer.onicecandidate = (e) => {
+            if (e.candidate && viewerSid) {
+                Promise.resolve(push(ref(db, `rooms/${roomId}/answerCandidates`), { ...e.candidate.toJSON(), sid: viewerSid })).catch(() => {});
+            }
+        };
+
+        peer.onconnectionstatechange = () => {
+            if (peer !== pc) return;
+            clearTimeout(viewerRetryTimer);
+            const st = peer.connectionState;
+            if (st === 'connected') {
+                setViewerStatus("🟢 بث مباشر مشفر", "#10b981");
+            } else if (st === 'failed' || st === 'disconnected') {
+                setViewerStatus("🔴 غير متصل بالكاميرا", "#ef4444");
+                viewerRetryTimer = setTimeout(() => {
+                    if (peer === pc && peer.connectionState !== 'connected') connectToSender();
+                }, st === 'failed' ? 1500 : 6000);
+            } else if (st === 'connecting') {
+                setViewerStatus("🟡 جاري الاتصال...", "#f59e0b");
+            }
+        };
+        return peer;
+    }
+
+    async function handleOffer(offer) {
+        if (offer.sid === viewerSid) return;
+        if (viewerSid !== null) createViewerPeer();   // عرض جديد = اتصال جديد
+        viewerSid = offer.sid;
+        const peer = pc;
+
+        await peer.setRemoteDescription({ type: offer.type, sdp: offer.sdp });
+        const ready = viewerPending.filter(c => c.sid === viewerSid);
+        viewerPending = viewerPending.filter(c => c.sid !== viewerSid);
+        for (const c of ready) {
+            const { sid: _s, ...cand } = c;
+            await peer.addIceCandidate(cand).catch(() => {});
+        }
+        const answer = await peer.createAnswer();
+        await peer.setLocalDescription(answer);
+        if (peer !== pc) return;
+        await set(ref(db, `rooms/${roomId}/answer`), { type: answer.type, sdp: answer.sdp, sid: viewerSid });
+    }
+
     function connectToSender() {
-        if (pc) pc.close();
-        pc = new RTCPeerConnection(rtcConfig);
+        viewerUnsubs.forEach(u => { try { u(); } catch (e) {} });
+        viewerUnsubs = [];
+        clearTimeout(viewerRetryTimer);
+        viewerSid = null;
+        viewerPending = [];
+        createViewerPeer();
+        setViewerStatus("🟡 في انتظار الكاميرا...", "#f59e0b");
 
-        pc.ontrack = (event) => {
-            const remoteVideo = document.getElementById('remoteVideo');
-            if (remoteVideo.srcObject !== event.streams[0]) {
-                remoteVideo.srcObject = event.streams[0];
-                remoteVideo.play().catch(() => {});
-            }
-        };
-
-        pc.ondatachannel = (event) => {
-            dataChannel = event.channel;
-            dataChannel.onmessage = (e) => {
-                const msg = JSON.parse(e.data);
-                if (msg.type === 'MOTION_ALERT') {
-                    triggerViewerAlert();
+        viewerUnsubs.push(
+            onValue(ref(db, `rooms/${roomId}/offer`), (snap) => {
+                const offer = snap.val();
+                if (!offer || !offer.sid) return;
+                viewerQueue = viewerQueue.then(() => handleOffer(offer)).catch(e => console.warn(e));
+            }, viewerSignalingError),
+            onChildAdded(ref(db, `rooms/${roomId}/offerCandidates`), (snap) => {
+                const c = snap.val();
+                if (!c) return;
+                if (pc && pc.remoteDescription && c.sid === viewerSid) {
+                    const { sid: _s, ...cand } = c;
+                    pc.addIceCandidate(cand).catch(() => {});
+                } else {
+                    viewerPending.push(c);
                 }
-            };
-        };
+            }, viewerSignalingError)
+        );
 
-        pc.onconnectionstatechange = () => {
-            const status = document.getElementById('viewerStatus');
-            if (pc.connectionState === 'connected') {
-                status.textContent = "🟢 بث مباشر مشفر";
-                status.style.color = "#10b981";
-            } else {
-                status.textContent = "🔴 غير متصل بالكاميرا";
-                status.style.color = "#ef4444";
-            }
-        };
-
-        const offerRef = ref(db, `rooms/${roomId}/offer`);
-        const offerCandidates = ref(db, `rooms/${roomId}/offerCandidates`);
-        const answerCandidates = ref(db, `rooms/${roomId}/answerCandidates`);
-
-        pc.onicecandidate = (e) => {
-            if (e.candidate) push(answerCandidates, e.candidate.toJSON());
-        };
-
-        onValue(offerRef, async (snapshot) => {
-            const offer = snapshot.val();
-            if (offer && !pc.currentRemoteDescription) {
-                await pc.setRemoteDescription(new RTCSessionDescription(offer));
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
-                await set(ref(db, `rooms/${roomId}/answer`), { sdp: answer.sdp, type: answer.type });
-            }
-        });
-
-        onChildAdded(offerCandidates, (snapshot) => {
-            pc.addIceCandidate(new RTCIceCandidate(snapshot.val()));
-        });
+        // إعلام الكاميرا بوجود مراقب ليُنشئ عرضاً جديداً
+        Promise.resolve(set(ref(db, `rooms/${roomId}/viewerJoin`), Date.now())).catch(viewerSignalingError);
     }
 
     window.sendRemoteCommand = (type, value) => {
         if (type === 'zoom') {
-            document.getElementById('remoteZoomVal').textContent = `${parseFloat(value).toFixed(1)}x`;
-            document.getElementById('remoteVideo').style.transform = `scale(${value})`;
+            $('remoteZoomVal').textContent = `${parseFloat(value).toFixed(1)}x`;
+            if (!hardwareZoomRemote) $('remoteVideo').style.transform = `scale(${value})`;
         } else if (type === 'gain') {
-            document.getElementById('remoteGainVal').textContent = `${parseFloat(value).toFixed(1)}x`;
+            $('remoteGainVal').textContent = `${parseFloat(value).toFixed(1)}x`;
         } else if (type === 'motion') {
-            document.getElementById('remoteMotionVal').textContent = `${value}%`;
+            $('remoteMotionVal').textContent = `${value}%`;
         }
-
         if (dataChannel && dataChannel.readyState === 'open') {
             dataChannel.send(JSON.stringify({ type, value }));
         }
     };
 
+    window.unmuteRemote = () => {
+        const v = $('remoteVideo');
+        v.muted = false;
+        v.play().catch(() => {});
+        $('unmuteBtn').classList.add('hidden');
+    };
+
     function playBeep() {
         if (alarmMuted) return;
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(880, ctx.currentTime);
-        gain.gain.setValueAtTime(0.3, ctx.currentTime);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.3);
+        try {
+            if (!alarmCtx) {
+                const Ctx = window.AudioContext || window.webkitAudioContext;
+                alarmCtx = new Ctx();
+            }
+            if (alarmCtx.state === 'suspended') alarmCtx.resume();
+            for (let i = 0; i < 3; i++) {
+                const t = alarmCtx.currentTime + i * 0.35;
+                const osc = alarmCtx.createOscillator();
+                const gain = alarmCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(880, t);
+                gain.gain.setValueAtTime(0.3, t);
+                gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+                osc.connect(gain);
+                gain.connect(alarmCtx.destination);
+                osc.start(t);
+                osc.stop(t + 0.3);
+            }
+        } catch (e) {}
     }
 
     let alertTimeout = null;
     function triggerViewerAlert() {
-        const banner = document.getElementById('motionAlert');
+        const banner = $('motionAlert');
         banner.classList.remove('hidden');
         playBeep();
         if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
@@ -560,14 +846,26 @@ const firebaseConfig = {
 
     window.toggleAlarmMute = () => {
         alarmMuted = !alarmMuted;
-        const btn = document.getElementById('muteAlarmBtn');
-        btn.textContent = alarmMuted ? "🔕 صوت التنبيهات: صامت" : "🔔 صوت التنبيهات: مفعل";
+        $('muteAlarmBtn').textContent = alarmMuted ? "🔕 صوت التنبيهات: صامت" : "🔔 صوت التنبيهات: مفعل";
     };
 
-    window.stopAll = () => {
-        if (motionInterval) clearInterval(motionInterval);
-        if (localStream) localStream.getTracks().forEach(t => t.stop());
-        if (pc) pc.close();
+    window.stopAll = async () => {
+        const wasSender = role === 'sender';
+        role = null;
+        try {
+            if (motionInterval) clearInterval(motionInterval);
+            clearTimeout(viewerRetryTimer);
+            cleanupSenderSignaling();
+            viewerUnsubs.forEach(u => { try { u(); } catch (e) {} });
+            if (localStream) localStream.getTracks().forEach(t => t.stop());
+            if (rawMicTrack) rawMicTrack.stop();
+            if (audioCtx) audioCtx.close().catch(() => {});
+            if (wakeLock) wakeLock.release().catch(() => {});
+            if (pc) pc.close();
+            if (wasSender && roomId) {
+                await Promise.race([remove(ref(db, `rooms/${roomId}`)), new Promise(r => setTimeout(r, 1500))]);
+            }
+        } catch (e) {}
         location.reload();
     };
 </script>
