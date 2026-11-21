@@ -40,8 +40,7 @@
         button.danger { background: var(--danger); }
         button.success { background: var(--success); }
         .hidden { display: none !important; }
-        
-        /* Video & Controls */
+
         .video-wrapper {
             position: relative; width: 100%; border-radius: 12px; overflow: hidden;
             background: #000; aspect-ratio: 16/9; margin-bottom: 14px;
@@ -50,7 +49,7 @@
         .badge {
             position: absolute; top: 10px; right: 10px; padding: 4px 10px;
             border-radius: 20px; font-size: 0.75rem; font-weight: bold;
-            background: rgba(15, 23, 42, 0.8); border: 1px solid #334155;
+            background: rgba(15, 23, 42, 0.85); border: 1px solid #334155;
         }
         .alert-banner {
             background: var(--danger); color: white; padding: 12px; border-radius: 10px;
@@ -58,7 +57,7 @@
             animation: pulse 1s infinite;
         }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-        
+
         .control-group { margin-bottom: 14px; background: #0f172a; padding: 12px; border-radius: 10px; }
         .control-header { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 6px; }
         input[type="range"] { padding: 0; margin: 0; accent-color: var(--primary); }
@@ -78,13 +77,13 @@
         <h2>🔒 نظام مراقبة الطفل المشفر</h2>
         <label>اسم المستخدم (Username)</label>
         <input type="text" id="username" placeholder="مثال: admin" autocomplete="username">
-        
+
         <label>كلمة المرور (Password)</label>
         <input type="password" id="password" placeholder="••••••••" autocomplete="current-password">
-        
+
         <label>رمز الأمان الثاني (2FA Secret PIN)</label>
         <input type="password" id="twoFactorPin" placeholder="أدخل الرمز السري المشترك بين الجهازين" inputmode="numeric">
-        
+
         <button id="loginBtn" onclick="handleLogin()">تسجيل الدخول الآمن</button>
         <div id="loginError" class="status-text" style="color: var(--danger);"></div>
     </div>
@@ -108,7 +107,7 @@
         <div class="control-group">
             <label>اختيار عدسة الكاميرا (Lens)</label>
             <select id="cameraSelect" onchange="switchCamera()"></select>
-            
+
             <div class="control-header">
                 <span>التقريب (Zoom)</span>
                 <span id="senderZoomVal">1.0x</span>
@@ -122,7 +121,7 @@
                 <span id="senderGainVal">1.5x</span>
             </div>
             <input type="range" id="senderGain" min="1" max="5" step="0.2" value="1.5" oninput="applyMicGain(this.value)">
-            
+
             <div class="control-header" style="margin-top: 12px;">
                 <span>حساسية كاشف الحركة (كلما زاد الرقم زادت الدقة)</span>
                 <span id="senderMotionVal">85%</span>
@@ -138,7 +137,7 @@
     <div id="viewerScreen" class="card hidden">
         <h2>👁️ شاشة المراقبة المباشرة</h2>
         <div id="motionAlert" class="alert-banner hidden">⚠️ تنبيه: تم رصد حركة للطفل!</div>
-        
+
         <div class="video-wrapper">
             <video id="remoteVideo" autoplay playsinline></video>
             <span class="badge" id="viewerStatus">في انتظار البث...</span>
@@ -172,34 +171,32 @@
 <!-- شاشة سوداء لتوفير البطارية في هاتف الطفل -->
 <div id="blackoutOverlay" class="blackout hidden" onclick="toggleBlackout()">
     <p>الكاميرا تعمل وتراقب الحركة في الخلفية...</p>
-    <small>اضغط مرتين أو المس الشاشة للإظهار</small>
+    <small>المس الشاشة للإظهار</small>
 </div>
 
-<!-- مكتبات Firebase -->
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import { getAuth, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-    import { getDatabase, ref, set, onValue, push, onChildAdded, remove, off } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+    import { getDatabase, ref, set, onValue, push, onChildAdded, remove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
     // ==========================================
     // ضع بيانات مشروع Firebase الخاصة بك هنا
     // ==========================================
-            const firebaseConfig = {
-  apiKey: "AIzaSyBzwMdIxbh13ivsFfz7FxnNXaGMLu07MK8",
-  authDomain: "baby-monitor-f4c03.firebaseapp.com",
-  databaseURL: "https://baby-monitor-f4c03-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "baby-monitor-f4c03",
-  storageBucket: "baby-monitor-f4c03.firebasestorage.app",
-  messagingSenderId: "238568142525",
-  appId: "1:238568142525:web:8f1f986915c433fecaa9d4",
-  measurementId: "G-G6XRDX2GGY"
-};
+    const firebaseConfig = {
+        apiKey: "AIzaSyBzwMdIxbh13ivsFfz7FxnNXaGMLu07MK8",
+ 	 authDomain: "baby-monitor-f4c03.firebaseapp.com",
+  	databaseURL: "https://baby-monitor-f4c03-default-rtdb.europe-west1.firebasedatabase.app",
+  	projectId: "baby-monitor-f4c03",
+	  storageBucket: "baby-monitor-f4c03.firebasestorage.app",
+  	messagingSenderId: "238568142525",
+	  appId: "1:238568142525:web:8f1f986915c433fecaa9d4",
+ 	 measurementId: "G-G6XRDX2GGY"
+    };
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getDatabase(app);
 
-    // المتغيرات العامة
     let roomId = "";
     let pc = null;
     let localStream = null;
@@ -211,7 +208,6 @@
     let motionInterval = null;
     let wakeLock = null;
 
-    // خوادم STUN لتجاوز الراوتر والاتصال عبر الإنترنت من أي مكان
     const rtcConfig = {
         iceServers: [
             { urls: "stun:stun.l.google.com:19302" },
@@ -219,7 +215,6 @@
         ]
     };
 
-    // دالة تشفير SHA-256 لتوليد مفتاح غرفة مشفر من اليوزر + رمز 2FA
     async function generateSecureRoomId(user, pin) {
         const msgBuffer = new TextEncoder().encode(user.toLowerCase().trim() + "::" + pin.trim() + "::BABY_MONITOR_2FA");
         const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
@@ -227,7 +222,6 @@
         return hashArray.map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 32);
     }
 
-    // تسجيل الدخول
     window.handleLogin = async () => {
         const user = document.getElementById('username').value.trim();
         const pass = document.getElementById('password').value;
@@ -239,7 +233,6 @@
             return;
         }
 
-        // تحويل اسم المستخدم إلى صيغة بريد إلكتروني إذا لم يكن بريداً
         const email = user.includes('@') ? user : `${user}@babymonitor.com`;
         errEl.textContent = "جاري التحقق والتشفير...";
 
@@ -250,7 +243,7 @@
             document.getElementById('loginScreen').classList.add('hidden');
             document.getElementById('roleScreen').classList.remove('hidden');
         } catch (error) {
-            errEl.textContent = "فشل الدخول: تأكد من اسم المستخدم وكلمة المرور.";
+            errEl.textContent = "فشل الدخول: " + (error.message || "تأكد من البيانات");
         }
     };
 
@@ -259,7 +252,6 @@
         location.reload();
     };
 
-    // منع قفل شاشة الهاتف أثناء التشغيل
     async function requestWakeLock() {
         try {
             if ('wakeLock' in navigator) {
@@ -274,75 +266,96 @@
     window.startSenderMode = async () => {
         document.getElementById('roleScreen').classList.add('hidden');
         document.getElementById('senderScreen').classList.remove('hidden');
+        const statusEl = document.getElementById('senderStatus');
+        statusEl.textContent = "جاري طلب إذن الكاميرا...";
+
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            statusEl.textContent = "❌ المتصفح لا يسمح بالكاميرا (تأكد من HTTPS)";
+            statusEl.style.color = "#ef4444";
+            return;
+        }
+
         await requestWakeLock();
         await loadCameras();
         await initMediaAndStream();
     };
 
     async function loadCameras() {
-        // طلب إذن مبدئي لإظهار أسماء العدسات
-        const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        tempStream.getTracks().forEach(t => t.stop());
+        const statusEl = document.getElementById('senderStatus');
+        try {
+            const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            tempStream.getTracks().forEach(t => t.stop());
 
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoDevices = devices.filter(d => d.kind === 'videoinput');
-        const select = document.getElementById('cameraSelect');
-        select.innerHTML = '';
-        videoDevices.forEach((device, idx) => {
-            const opt = document.createElement('option');
-            opt.value = device.deviceId;
-            opt.text = device.label || `كاميرا ${idx + 1}`;
-            if (device.label.toLowerCase().includes('back') || device.label.toLowerCase().includes('خلفية')) {
-                opt.selected = true;
-            }
-            select.appendChild(opt);
-        });
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(d => d.kind === 'videoinput');
+            const select = document.getElementById('cameraSelect');
+            select.innerHTML = '';
+
+            videoDevices.forEach((device, idx) => {
+                const opt = document.createElement('option');
+                opt.value = device.deviceId;
+                opt.text = device.label || `كاميرا ${idx + 1}`;
+                if (/back|rear|environment|خلفية/i.test(device.label)) {
+                    opt.selected = true;
+                }
+                select.appendChild(opt);
+            });
+        } catch (err) {
+            statusEl.textContent = "❌ رفض إذن الكاميرا/الميكروفون";
+            statusEl.style.color = "#ef4444";
+        }
     }
 
     async function initMediaAndStream(deviceId = null) {
-        if (localStream) localStream.getTracks().forEach(t => t.stop());
+        const statusEl = document.getElementById('senderStatus');
+        try {
+            if (localStream) localStream.getTracks().forEach(t => t.stop());
 
-        const selectedDeviceId = deviceId || document.getElementById('cameraSelect').value;
-        const rawStream = await navigator.mediaDevices.getUserMedia({
-            video: {
-                deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
-                width: { ideal: 1280 },
-                height: { ideal: 720 }
-            },
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: false
+            const selectedDeviceId = deviceId || document.getElementById('cameraSelect').value;
+            let rawStream;
+
+            try {
+                rawStream = await navigator.mediaDevices.getUserMedia({
+                    video: selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : { facingMode: "environment" },
+                    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
+                });
+            } catch (e) {
+                rawStream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: true
+                });
             }
-        });
 
-        // معالجة الصوت وتضخيم حساسية الميكروفون (Web Audio API)
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const source = audioCtx.createMediaStreamSource(rawStream);
-        gainNode = audioCtx.createGain();
-        gainNode.gain.value = parseFloat(document.getElementById('senderGain').value);
-        const dest = audioCtx.createMediaStreamDestination();
-        source.connect(gainNode);
-        gainNode.connect(dest);
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioCtx.createMediaStreamSource(rawStream);
+            gainNode = audioCtx.createGain();
+            gainNode.gain.value = parseFloat(document.getElementById('senderGain').value);
+            const dest = audioCtx.createMediaStreamDestination();
+            source.connect(gainNode);
+            gainNode.connect(dest);
 
-        videoTrack = rawStream.getVideoTracks()[0];
-        const boostedAudioTrack = dest.stream.getAudioTracks()[0];
-        localStream = new MediaStream([videoTrack, boostedAudioTrack]);
+            videoTrack = rawStream.getVideoTracks()[0];
+            const boostedAudioTrack = dest.stream.getAudioTracks()[0];
+            localStream = new MediaStream([videoTrack, boostedAudioTrack]);
 
-        const videoEl = document.getElementById('localVideo');
-        videoEl.srcObject = localStream;
+            const videoEl = document.getElementById('localVideo');
+            videoEl.srcObject = localStream;
+            await videoEl.play().catch(() => {});
 
-        // فحص دعم الزوم الحقيقي في العدسة
-        const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
-        const zoomInput = document.getElementById('senderZoom');
-        if (capabilities.zoom) {
-            zoomInput.min = capabilities.zoom.min;
-            zoomInput.max = capabilities.zoom.max;
-            zoomInput.step = capabilities.zoom.step || 0.1;
+            const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
+            const zoomInput = document.getElementById('senderZoom');
+            if (capabilities.zoom) {
+                zoomInput.min = capabilities.zoom.min;
+                zoomInput.max = capabilities.zoom.max;
+                zoomInput.step = capabilities.zoom.step || 0.1;
+            }
+
+            startMotionDetector(videoEl);
+            await setupSenderWebRTC();
+        } catch (err) {
+            statusEl.textContent = "❌ تعذر تشغيل الكاميرا: " + (err.name || err.message);
+            statusEl.style.color = "#ef4444";
         }
-
-        startMotionDetector(videoEl);
-        setupSenderWebRTC();
     }
 
     window.switchCamera = () => {
@@ -355,9 +368,12 @@
         if (!videoTrack) return;
         const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
         if (capabilities.zoom) {
-            await videoTrack.applyConstraints({ advanced: [{ zoom: parseFloat(val) }] });
+            try {
+                await videoTrack.applyConstraints({ advanced: [{ zoom: parseFloat(val) }] });
+            } catch (e) {
+                document.getElementById('localVideo').style.transform = `scale(${val})`;
+            }
         } else {
-            // زوم رقمي بديل في حال عدم دعم الهاردوير
             document.getElementById('localVideo').style.transform = `scale(${val})`;
         }
     };
@@ -372,7 +388,6 @@
         document.getElementById('senderMotionVal').textContent = `${val}%`;
     };
 
-    // كاشف الحركة الدقيق (Pixel Difference Analysis)
     function startMotionDetector(videoEl) {
         if (motionInterval) clearInterval(motionInterval);
         const canvas = document.createElement('canvas');
@@ -389,8 +404,7 @@
 
             if (prevFrame) {
                 let changedPixels = 0;
-                // تحويل الحساسية (50-98) إلى عتبة تغير لوني دقيقة
-                const colorThreshold = 110 - motionSensitivity; 
+                const colorThreshold = 110 - motionSensitivity;
 
                 for (let i = 0; i < currentFrame.length; i += 4) {
                     const diff = Math.abs(currentFrame[i] - prevFrame[i]) +
@@ -399,7 +413,6 @@
                     if (diff > colorThreshold) changedPixels++;
                 }
 
-                // إذا تغير أكثر من 0.4% من إطارات الصورة (يلتقط حركة يد أو رأس بسيطة)
                 const totalPixels = canvas.width * canvas.height;
                 if ((changedPixels / totalPixels) > 0.004) {
                     const now = Date.now();
@@ -412,17 +425,17 @@
                 }
             }
             prevFrame = new Uint8ClampedArray(currentFrame);
-        }, 300); // فحص كل 300 ملي ثانية
+        }, 300);
     }
 
     async function setupSenderWebRTC() {
+        if (pc) pc.close();
         const roomRef = ref(db, `rooms/${roomId}`);
-        await remove(roomRef); // تنظيف أي جلسة قديمة
+        await remove(roomRef);
 
         pc = new RTCPeerConnection(rtcConfig);
         localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-        // قناة بيانات مشفرة لاستقبال أوامر التحكم وإرسال تنبيهات الحركة
         dataChannel = pc.createDataChannel("control");
         dataChannel.onmessage = (e) => {
             const msg = JSON.parse(e.data);
@@ -460,7 +473,6 @@
         await pc.setLocalDescription(offer);
         await set(ref(db, `rooms/${roomId}/offer`), { sdp: offer.sdp, type: offer.type });
 
-        // الاستماع لرد جهاز المراقبة
         onValue(ref(db, `rooms/${roomId}/answer`), async (snapshot) => {
             const data = snapshot.val();
             if (!pc.currentRemoteDescription && data) {
@@ -488,12 +500,14 @@
     };
 
     function connectToSender() {
+        if (pc) pc.close();
         pc = new RTCPeerConnection(rtcConfig);
 
         pc.ontrack = (event) => {
             const remoteVideo = document.getElementById('remoteVideo');
             if (remoteVideo.srcObject !== event.streams[0]) {
                 remoteVideo.srcObject = event.streams[0];
+                remoteVideo.play().catch(() => {});
             }
         };
 
@@ -544,7 +558,6 @@
     window.sendRemoteCommand = (type, value) => {
         if (type === 'zoom') {
             document.getElementById('remoteZoomVal').textContent = `${parseFloat(value).toFixed(1)}x`;
-            // تطبيق زوم بصري محلي فوري بجانب إرسال الأمر للكاميرا
             document.getElementById('remoteVideo').style.transform = `scale(${value})`;
         } else if (type === 'gain') {
             document.getElementById('remoteGainVal').textContent = `${parseFloat(value).toFixed(1)}x`;
@@ -557,7 +570,6 @@
         }
     };
 
-    // صوت تنبيه مولّد برمجياً بدون الحاجة لملفات صوت خارجية
     function playBeep() {
         if (alarmMuted) return;
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
