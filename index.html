@@ -185,15 +185,16 @@
     // ضع بيانات مشروع Firebase الخاصة بك هنا
     // ==========================================
     const firebaseConfig = {
-         apiKey: "AIzaSyBzwMdIxbh13ivsFfz7FxnNXaGMLu07MK8",
-  	authDomain: "baby-monitor-f4c03.firebaseapp.com",
- 	 databaseURL: "https://baby-monitor-f4c03-default-rtdb.europe-west1.firebasedatabase.app",
- 	 projectId: "baby-monitor-f4c03",
-  	storageBucket: "baby-monitor-f4c03.firebasestorage.app",
- 	 messagingSenderId: "238568142525",
- 	 appId: "1:238568142525:web:8f1f986915c433fecaa9d4",
- 	 measurementId: "G-G6XRDX2GGY"
-    };
+        const firebaseConfig = {
+  apiKey: "AIzaSyBzwMdIxbh13ivsFfz7FxnNXaGMLu07MK8",
+  authDomain: "baby-monitor-f4c03.firebaseapp.com",
+  databaseURL: "https://baby-monitor-f4c03-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "baby-monitor-f4c03",
+  storageBucket: "baby-monitor-f4c03.firebasestorage.app",
+  messagingSenderId: "238568142525",
+  appId: "1:238568142525:web:8f1f986915c433fecaa9d4",
+  measurementId: "G-G6XRDX2GGY"
+};
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
