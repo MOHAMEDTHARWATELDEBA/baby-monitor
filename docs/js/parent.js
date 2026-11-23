@@ -30,6 +30,13 @@ const connLogEl = document.getElementById('connLog');
 const toast = document.getElementById('toast');
 const talkBtn = document.getElementById('talkBtn');
 const muteBtn = document.getElementById('muteBtn');
+const playBtn = document.getElementById('playBtn');
+
+// التشغيل التلقائي بالصوت ممنوع في متصفحات الموبايل بدون لمسة
+// من المستخدم، لذلك نبدأ مكتومين (التشغيل المكتوم مسموح) ونترك
+// تشغيل الصوت للمسة المستخدم على زر التشغيل أو على الفيديو نفسه.
+remoteVideo.muted = true;
+remoteVideo.playsInline = true;
 
 let peer = null;
 let dataConn = null;
@@ -39,7 +46,8 @@ let micStream = null;
 let micTrack = null;
 let micAdded = false;
 let talking = false;
-let muted = false;
+let muted = true;
+let playStarted = false;
 let retryTimer = null;
 let videoTimeout = null;
 let videoReceived = false;
@@ -125,14 +133,30 @@ function createPC() {
       if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
     }
     if (track.kind === 'audio') audioReceived = true;
-    remoteVideo.srcObject = remoteStream;
-    remoteVideo.play()
-      .then(() => {
-        setTimeout(() => {
-          clog(`عنصر الفيديو: ${remoteVideo.videoWidth}x${remoteVideo.videoHeight} readyState=${remoteVideo.readyState} paused=${remoteVideo.paused}`);
-        }, 1000);
-      })
-      .catch((e) => clog('⚠️ تعذّر تشغيل الفيديو تلقائيًا: ' + e.message + ' — اضغط على الفيديو'));
+    // عيّن الستريم وشغّل مرة واحدة فقط: استدعاء play() مع كل تراك
+    // (فيديو ثم صوت) كان يلغي الاستدعاء السابق بخطأ Aborted.
+    if (remoteVideo.srcObject !== remoteStream) {
+      remoteVideo.srcObject = remoteStream;
+    }
+    if (!playStarted) {
+      playStarted = true;
+      // مكتوم أولًا: التشغيل المكتوم مسموح تلقائيًا، والصوت يُشغَّل بلمسة
+      remoteVideo.muted = true;
+      muted = true;
+      remoteVideo.play()
+        .then(() => {
+          clog('✅ الفيديو شغال (مكتوم مؤقتًا) — اضغط زر التشغيل لسماع الصوت');
+          if (playBtn) playBtn.style.display = 'block';
+          setTimeout(() => {
+            clog(`عنصر الفيديو: ${remoteVideo.videoWidth}x${remoteVideo.videoHeight} readyState=${remoteVideo.readyState} paused=${remoteVideo.paused}`);
+          }, 1000);
+        })
+        .catch((e) => {
+          playStarted = false;
+          clog('⚠️ تعذّر تشغيل الفيديو تلقائيًا: ' + e.message + ' — اضغط زر التشغيل أو على الفيديو نفسه');
+          if (playBtn) playBtn.style.display = 'block';
+        });
+    }
     babyBadge.textContent = 'كاميرا البيبي: متصلة ✅';
     babyBadge.className = 'badge green';
     setStatus('✅ البث المباشر شغال', 'green');
@@ -155,10 +179,29 @@ function resetPCAndRetry() {
   if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   videoReceived = false;
   audioReceived = false;
+  playStarted = false;
   micAdded = false;
   remoteStream = new MediaStream();
   scheduleRetry();
 }
+
+// زر التشغيل: لمسة المستخدم تسمح بتشغيل الصوت (وهي أيضًا تشغّل الفيديو)
+async function unmuteAndPlay() {
+  try {
+    remoteVideo.muted = false;
+    muted = false;
+    muteBtn.textContent = '🔊 صوت البيبي: شغال';
+    await remoteVideo.play();
+    if (playBtn) playBtn.style.display = 'none';
+    clog('✅ تم تشغيل الفيديو والصوت بلمسة المستخدم');
+  } catch (e) {
+    clog('⚠️ تعذّر التشغيل باللمسة: ' + e.message);
+  }
+}
+if (playBtn) playBtn.onclick = unmuteAndPlay;
+remoteVideo.addEventListener('click', () => {
+  if (remoteVideo.paused || remoteVideo.muted) unmuteAndPlay();
+});
 
 async function handleSignal(data) {
   if (!data || !data.type) return;
@@ -307,9 +350,13 @@ talkBtn.onclick = async () => {
 };
 
 muteBtn.onclick = () => {
-  muted = !muted;
-  remoteVideo.muted = muted;
-  muteBtn.textContent = muted ? '🔇 صوت البيبي: مكتوم' : '🔊 صوت البيبي: شغال';
+  if (muted) {
+    unmuteAndPlay();
+  } else {
+    muted = true;
+    remoteVideo.muted = true;
+    muteBtn.textContent = '🔇 صوت البيبي: مكتوم — اضغط للتشغيل';
+  }
 };
 
 document.getElementById('snapBtn').onclick = () => {
