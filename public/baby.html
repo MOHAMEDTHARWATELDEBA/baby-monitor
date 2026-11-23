@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>📷 موبايل البيبي — Baby Monitor</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="wrap wide">
+  <h1>📷 موبايل البيبي</h1>
+  <p class="sub">سيب الصفحة دي مفتوحة جنب البيبي. كود الغرفة: <b id="roomCode" style="color:#fff;letter-spacing:3px">—</b></p>
+
+  <p><span class="badge red" id="statusBadge">⏳ بانتظار تشغيل الكاميرا…</span>
+     <span class="badge" id="parentBadge">الأب/الأم: غير متصل</span></p>
+
+  <div style="height:14px"></div>
+
+  <div class="video-wrap">
+    <video id="localVideo" autoplay muted playsinline></video>
+    <div class="overlay">
+      <span class="badge green"><span class="live-dot"></span>كاميرا البيبي</span>
+      <span class="badge" id="motionBadge">لا توجد حركة</span>
+    </div>
+  </div>
+  <!-- صوت الأب/الأم يطلع من هنا -->
+  <audio id="parentAudio" autoplay playsinline></audio>
+
+  <div class="card">
+    <h2>🎯 كشف الحركة والصوت</h2>
+    <p>لو البيبي اتحرك أو عمل صوت عالي، هيتبعت تنبيه فوري لموبايل الأب/الأم.</p>
+    <label>حساسية كشف الحركة: <b id="sensVal">متوسطة</b></label>
+    <input type="range" id="sensitivity" min="1" max="3" step="1" value="2">
+    <div class="row" style="margin-top:6px">
+      <span class="hint">1 = أقل حساسية (حركات كبيرة بس) &nbsp;•&nbsp; 3 = حساسة جدًا</span>
+    </div>
+    <p class="hint" style="margin-top:10px">مستوى الصوت الآن: <b id="audioLevel">—</b> &nbsp;•&nbsp; آخر حركة: <b id="lastMotion">—</b></p>
+  </div>
+
+  <div class="card">
+    <h2>🌙 أدوات مساعدة</h2>
+    <div class="row">
+      <button class="btn ghost" id="lullabyBtn">🎵 تشغيل تهويدة</button>
+      <button class="btn ghost" id="lightBtn">💡 إضاءة ليلية</button>
+      <button class="btn ghost" id="flipBtn">🔄 تبديل الكاميرا</button>
+    </div>
+    <p class="hint" style="margin-top:12px">التهويدة والإضاءة بيشتغلوا على موبايل البيبي نفسه. جرّبهم قبل النوم.</p>
+  </div>
+
+  <div class="card">
+    <h2>📋 سجل الأحداث</h2>
+    <ul class="log" id="log"><li>تم فتح صفحة البيبي…</li></ul>
+  </div>
+
+  <button class="btn danger" onclick="location.href='/'">إيقاف المراقبة والخروج</button>
+  <footer>خلي الموبايل في الشاحن 🔌 والشاشة مفتوحة — فعّل قفل الشاشة التلقائي على "أبدًا" من الإعدادات إن أمكن.</footer>
+</div>
+
+<canvas id="motionCanvas" width="160" height="120" style="display:none"></canvas>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/baby.js"></script>
+</body>
+</html>

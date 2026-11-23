@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>👀 مشاهدة البيبي — Baby Monitor</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="wrap wide">
+  <h1>👀 مشاهدة البيبي</h1>
+  <p class="sub">غرفة: <b id="roomCode" style="color:#fff;letter-spacing:3px">—</b></p>
+
+  <p><span class="badge red" id="statusBadge">⏳ بانتظار موبايل البيبي…</span>
+     <span class="badge" id="babyBadge">كاميرا البيبي: غير متصلة</span></p>
+
+  <div style="height:14px"></div>
+
+  <div class="video-wrap" id="videoWrap">
+    <video id="remoteVideo" autoplay playsinline controls></video>
+    <div class="overlay">
+      <span class="badge green"><span class="live-dot"></span>بث مباشر</span>
+      <span class="badge" id="clock">--:--:--</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🎙️ التحدث مع البيبي</h2>
+    <p>اضغط زر التحدث واتكلم، صوتك هيطلع من موبايل البيبي. اضغط تاني عشان توقّف.</p>
+    <div class="row">
+      <button class="btn green" id="talkBtn">🎙️ اضغط للتحدث مع البيبي</button>
+      <button class="btn ghost" id="muteBtn">🔊 صوت البيبي: شغال</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>📸 وأدوات</h2>
+    <div class="row">
+      <button class="btn ghost" id="snapBtn">📸 التقاط صورة</button>
+      <button class="btn ghost" id="fullBtn">⛶ ملء الشاشة</button>
+      <button class="btn ghost" id="reconnectBtn">🔄 إعادة الاتصال</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🔔 التنبيهات</h2>
+    <p>أي حركة أو صوت عالي عند البيبي هيظهر هنا فورًا، مع اهتزاز وتنبيه صوتي.</p>
+    <ul class="log" id="alerts"><li>لا توجد تنبيهات بعد — النظام شغال ومراقب 👀</li></ul>
+  </div>
+
+  <button class="btn danger" onclick="location.href='/'">الخروج من الغرفة</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/parent.js"></script>
+</body>
+</html>
