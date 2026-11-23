@@ -1,7 +1,8 @@
 // Baby side (GitHub Pages version) — PeerJS, no own server needed.
 // موبايل البيبي: كاميرا + مايك + كشف حركة وصوت + استقبال صوت الأب/الأم
 // الإشارات تتم عبر PeerJS Cloud المجاني (0.peerjs.com)، والفيديو/الصوت
-// يمشيان مباشرة Peer-to-Peer عبر WebRTC.
+// يمشيان مباشرة Peer-to-Peer عبر WebRTC. أُضيف TURN مجاني لأن شبكات
+// الموبايل كثيرًا ما تفشل مع STUN وحده.
 const params = new URLSearchParams(location.search);
 const room = (params.get('room') || '').toUpperCase();
 if (!room) location.href = 'index.html';
@@ -9,6 +10,13 @@ if (!room) location.href = 'index.html';
 document.getElementById('roomCode').textContent = room;
 
 const PEER_ID = `bm-${room}-baby`;
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+];
 const video = document.getElementById('localVideo');
 const parentAudio = document.getElementById('parentAudio');
 const statusBadge = document.getElementById('statusBadge');
@@ -78,12 +86,7 @@ function initPeer() {
     setStatus('❌ مكتبة PeerJS لم تُحمّل — تأكد من الإنترنت وأعد تحميل الصفحة', 'red');
     return;
   }
-  peer = new Peer(PEER_ID, {
-    config: { iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-    ]},
-  });
+  peer = new Peer(PEER_ID, { config: { iceServers: ICE_SERVERS } });
 
   peer.on('open', (id) => {
     log('تم التسجيل في شبكة PeerJS بالمعرّف ' + id);
@@ -101,14 +104,27 @@ function initPeer() {
     }
   });
 
-  // الأب/الأم بيتصل فيديو/صوت
+  // مكالمتان من الأب/الأم: مشاهدة (view) وتحدث (talk)، مفصولتان
+  // عشان التحدث لا يعطّل المشاهدة.
   peer.on('call', (call) => {
+    const purpose = call.metadata && call.metadata.purpose;
+    if (purpose === 'talk') {
+      call.answer(); // لا نرسل شيئًا، نستقبل صوت الأب فقط
+      call.on('stream', (remoteStream) => {
+        parentAudio.srcObject = remoteStream;
+        parentAudio.play().catch(() => {});
+        log('وصل صوت الأب/الأم 🔊');
+      });
+      return;
+    }
+    // مشاهدة: نرسل الكاميرا والمايك
     call.answer(localStream);
     call.on('stream', (remoteStream) => {
-      // صوت الأب/الأم اللي جاي لنا (تراك صوتي فقط)
-      parentAudio.srcObject = remoteStream;
-      parentAudio.play().catch(() => {});
-      log('وصل صوت الأب/الأم 🔊');
+      // لو الأب بعت صوته مع مكالمة المشاهدة (نسخ قديمة)، شغّله
+      if (remoteStream && remoteStream.getAudioTracks().length) {
+        parentAudio.srcObject = remoteStream;
+        parentAudio.play().catch(() => {});
+      }
     });
     call.on('close', () => {
       parentBadge.textContent = 'الأب/الأم: غير متصل';
@@ -122,7 +138,6 @@ function initPeer() {
     log('اتصال WebRTC ناجح ✅');
   });
 
-  // الأب/الأم بيفتح قناة بيانات للتنبيهات
   peer.on('connection', (conn) => {
     dataConn = conn;
     conn.on('open', () => log('قناة التنبيهات مفتوحة مع الأب/الأم'));
@@ -239,7 +254,7 @@ document.getElementById('lightBtn').onclick = (e) => {
 document.getElementById('flipBtn').onclick = async () => {
   facingMode = facingMode === 'environment' ? 'user' : 'environment';
   await startCamera();
-  log('تم تبديل الكاميرا');
+  log('تم تبديل الكاميرا — لو كان الأب متصلًا، اضغط إعادة الاتصال عنده');
 };
 
 startCamera();
