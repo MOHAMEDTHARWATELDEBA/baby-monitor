@@ -1,8 +1,12 @@
-// Baby side (GitHub Pages version) — PeerJS, no own server needed.
+// Baby side (GitHub Pages version) — raw WebRTC + PeerJS DataConnection signaling.
 // موبايل البيبي: كاميرا + مايك + كشف حركة وصوت + استقبال صوت الأب/الأم
-// الإشارات تتم عبر PeerJS Cloud المجاني (0.peerjs.com)، والفيديو/الصوت
-// يمشيان مباشرة Peer-to-Peer عبر WebRTC. أُضيف TURN مجاني لأن شبكات
-// الموبايل كثيرًا ما تفشل مع STUN وحده.
+//
+// لماذا WebRTC خام وليس مكالمات PeerJS الجاهزة؟
+// في النسخة السابقة كان الصوت يصل والموشن يصل، لكن تراك الفيديو
+// كان يضيع أحيانًا لأن عرض الأب (بلا ستريم) لم يكن يفاوض على
+// فيديو صراحةً. هنا ننشئ RTCPeerConnection بأنفسنا ونضيف تراكي
+// الفيديو والصوت صراحةً، و PeerJS يُستخدم فقط كقناة إشارات
+// (DataConnection) لتبادل offer/answer/ICE والتنبيهات.
 const params = new URLSearchParams(location.search);
 const room = (params.get('room') || '').toUpperCase();
 if (!room) location.href = 'index.html';
@@ -26,6 +30,7 @@ const logEl = document.getElementById('log');
 
 let peer = null;
 let dataConn = null;
+let pc = null;
 let localStream = null;
 let facingMode = 'environment';
 let wakeLock = null;
@@ -41,11 +46,12 @@ function setStatus(text, cls) {
   statusBadge.textContent = text;
   statusBadge.className = 'badge ' + (cls || '');
 }
-function sendAlert(data) {
+function sendSignal(obj) {
   if (dataConn && dataConn.open) {
-    try { dataConn.send(data); } catch (e) { console.warn('alert send failed', e); }
+    try { dataConn.send(obj); } catch (e) { console.warn('signal send failed', e); }
   }
 }
+function sendAlert(data) { sendSignal(data); }
 
 async function requestWakeLock() {
   try {
@@ -61,14 +67,33 @@ document.addEventListener('visibilitychange', () => {
 
 async function startCamera() {
   try {
-    if (localStream) localStream.getTracks().forEach(t => t.stop());
-    localStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
+    if (localStream) {
+      // لو الكاميرا اتبدلت وكان في اتصال شغال، استبدل التراكات بدل إيقافها
+      const oldTracks = localStream.getTracks();
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      if (pc) {
+        for (const track of newStream.getTracks()) {
+          const sender = pc.getSenders().find(s => s.track && s.track.kind === track.kind);
+          if (sender) await sender.replaceTrack(track);
+        }
+      }
+      oldTracks.forEach(t => t.stop());
+      localStream = newStream;
+    } else {
+      localStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    }
     video.srcObject = localStream;
-    setStatus('✅ الكاميرا شغالة — بانتظار الأب/الأم', 'green');
-    log('الكاميرا والمايك شغالين');
+    const v = localStream.getVideoTracks()[0];
+    const a = localStream.getAudioTracks()[0];
+    log(`الكاميرا والمايك شغالين — فيديو: ${v ? v.label + ' (' + v.readyState + ')' : 'مفقود!'}، صوت: ${a ? a.readyState : 'مفقود!'}`);
+    if (!v) setStatus('❌ تراك الفيديو مفقود من الكاميرا — جرّب إعادة تحميل الصفحة', 'red');
+    else setStatus('✅ الكاميرا شغالة — بانتظار الأب/الأم', 'green');
     await requestWakeLock();
     if (!soundTimer) startSoundDetection();
     if (!motionTimer) startMotionDetection();
@@ -77,6 +102,71 @@ async function startCamera() {
     setStatus('❌ لازم تسمح بالكاميرا والمايك', 'red');
     log('خطأ في الكاميرا/المايك: ' + err.name + ' — افتح الصفحة من HTTPS واسمح بالأذونات');
     alert('لازم تسمح بالكاميرا والمايك عشان المراقبة تشتغل.');
+  }
+}
+
+function createPC() {
+  if (pc) { try { pc.close(); } catch (e) {} }
+  pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  localStream.getTracks().forEach(track => {
+    pc.addTrack(track, localStream);
+    log(`أُضيف تراك للإرسال: ${track.kind} — ${track.label} (${track.readyState})`);
+  });
+  pc.onicecandidate = (event) => {
+    if (event.candidate) sendSignal({ type: 'ice', candidate: event.candidate });
+  };
+  pc.ontrack = (event) => {
+    // صوت الأب/الأم عند التحدث (إعادة تفاوض من طرف الأب)
+    if (event.track.kind === 'audio') {
+      parentAudio.srcObject = event.streams[0];
+      parentAudio.play().catch(() => {});
+      log('وصل صوت الأب/الأم 🔊');
+    }
+  };
+  pc.onconnectionstatechange = () => {
+    log('حالة اتصال WebRTC: ' + pc.connectionState);
+    if (pc.connectionState === 'connected') {
+      parentBadge.textContent = 'الأب/الأم: متصل ✅';
+      parentBadge.className = 'badge green';
+      setStatus('✅ متصل بالأب/الأم — البث شغال', 'green');
+    } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+      parentBadge.textContent = 'الأب/الأم: غير متصل';
+      parentBadge.className = 'badge';
+      setStatus('⚠️ انقطع الاتصال — بانتظار الأب/الأم', 'amber');
+    }
+  };
+  return pc;
+}
+
+async function handleSignal(data) {
+  if (!data || !data.type) return;
+  try {
+    if (data.type === 'join') {
+      log('الأب/الأم طلب الاتصال — جاري إنشاء عرض الفيديو…');
+      createPC();
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignal({ type: 'offer', sdp: offer });
+      log('تم إرسال العرض (offer) — فيديو + صوت');
+    } else if (data.type === 'answer') {
+      if (!pc) return;
+      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      log('تم استقبال الإجابة (answer) من الأب/الأم');
+    } else if (data.type === 'offer') {
+      // إعادة تفاوض من الأب (مثلًا عند بدء التحدث)
+      if (!pc) return;
+      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSignal({ type: 'answer', sdp: answer });
+      log('تم الرد على عرض إعادة التفاوض');
+    } else if (data.type === 'ice' && data.candidate) {
+      if (!pc) return;
+      await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+    }
+  } catch (e) {
+    console.warn('signal error', e);
+    log('⚠️ خطأ في الإشارات: ' + (e.message || e));
   }
 }
 
@@ -104,44 +194,18 @@ function initPeer() {
     }
   });
 
-  // مكالمتان من الأب/الأم: مشاهدة (view) وتحدث (talk)، مفصولتان
-  // عشان التحدث لا يعطّل المشاهدة.
-  peer.on('call', (call) => {
-    const purpose = call.metadata && call.metadata.purpose;
-    if (purpose === 'talk') {
-      call.answer(); // لا نرسل شيئًا، نستقبل صوت الأب فقط
-      call.on('stream', (remoteStream) => {
-        parentAudio.srcObject = remoteStream;
-        parentAudio.play().catch(() => {});
-        log('وصل صوت الأب/الأم 🔊');
-      });
-      return;
-    }
-    // مشاهدة: نرسل الكاميرا والمايك
-    call.answer(localStream);
-    call.on('stream', (remoteStream) => {
-      // لو الأب بعت صوته مع مكالمة المشاهدة (نسخ قديمة)، شغّله
-      if (remoteStream && remoteStream.getAudioTracks().length) {
-        parentAudio.srcObject = remoteStream;
-        parentAudio.play().catch(() => {});
-      }
-    });
-    call.on('close', () => {
+  peer.on('connection', (conn) => {
+    dataConn = conn;
+    conn.on('open', () => log('قناة الإشارات/التنبيهات مفتوحة مع الأب/الأم'));
+    conn.on('data', handleSignal);
+    conn.on('close', () => {
+      if (dataConn === conn) dataConn = null;
+      if (pc) { try { pc.close(); } catch (e) {} pc = null; }
       parentBadge.textContent = 'الأب/الأم: غير متصل';
       parentBadge.className = 'badge';
       setStatus('✅ الكاميرا شغالة — بانتظار الأب/الأم', 'green');
-      log('الأب/الأم أنهى المكالمة');
+      log('الأب/الأم أغلق قناة الإشارات');
     });
-    parentBadge.textContent = 'الأب/الأم: متصل ✅';
-    parentBadge.className = 'badge green';
-    setStatus('✅ متصل بالأب/الأم — البث شغال', 'green');
-    log('اتصال WebRTC ناجح ✅');
-  });
-
-  peer.on('connection', (conn) => {
-    dataConn = conn;
-    conn.on('open', () => log('قناة التنبيهات مفتوحة مع الأب/الأم'));
-    conn.on('close', () => { if (dataConn === conn) dataConn = null; });
   });
 }
 
@@ -254,7 +318,7 @@ document.getElementById('lightBtn').onclick = (e) => {
 document.getElementById('flipBtn').onclick = async () => {
   facingMode = facingMode === 'environment' ? 'user' : 'environment';
   await startCamera();
-  log('تم تبديل الكاميرا — لو كان الأب متصلًا، اضغط إعادة الاتصال عنده');
+  log('تم تبديل الكاميرا');
 };
 
 startCamera();

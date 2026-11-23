@@ -1,9 +1,12 @@
-// Parent side (GitHub Pages version) — PeerJS, no own server needed.
+// Parent side (GitHub Pages version) — raw WebRTC + PeerJS DataConnection signaling.
 // موبايل الأب/الأم: مشاهدة + سماع + تحدث + تنبيهات حركة/صوت
-// مكالمة المشاهدة تتم بدون مايك إطلاقًا، حتى لا يمنع إذن المايك
-// وصول الفيديو. التحدث مكالمة ثانية منفصلة تُفتح فقط عند الضغط
-// على زر التحدث. أُضيف TURN مجاني لأن شبكات الموبايل كثيرًا ما
-// تفشل مع STUN وحده، وإعادة محاولة تلقائية مع مهلة 10 ثوانٍ.
+//
+// لماذا WebRTC خام وليس مكالمات PeerJS الجاهزة؟
+// كان الصوت يصل والموشن يصل، لكن تراك الفيديو كان يضيع أحيانًا
+// لأن عرض الأب (بلا ستريم) لم يكن يفاوض على فيديو صراحةً. هنا
+// ننشئ RTCPeerConnection بأنفسنا ونضيف transceivers صريحة:
+// فيديو recvonly + صوت recvonly، فيضمن التفاوض على الفيديو.
+// PeerJS يُستخدم فقط كقناة إشارات لتبادل offer/answer/ICE.
 const params = new URLSearchParams(location.search);
 const room = (params.get('room') || '').toUpperCase();
 if (!room) location.href = 'index.html';
@@ -11,7 +14,6 @@ if (!room) location.href = 'index.html';
 document.getElementById('roomCode').textContent = room;
 
 const BABY_PEER_ID = `bm-${room}-baby`;
-// معرّف عشوائي للأب/الأم حتى لا يتعارض مع تبويب آخر مفتوح بنفس الغرفة
 const MY_PEER_ID = `bm-${room}-parent-${Math.floor(Math.random() * 100000)}`;
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -30,16 +32,18 @@ const talkBtn = document.getElementById('talkBtn');
 const muteBtn = document.getElementById('muteBtn');
 
 let peer = null;
-let mediaCall = null;
-let talkCall = null;
 let dataConn = null;
+let pc = null;
+let remoteStream = new MediaStream();
 let micStream = null;
 let micTrack = null;
+let micAdded = false;
 let talking = false;
 let muted = false;
 let retryTimer = null;
-let streamTimeout = null;
-let streamReceived = false;
+let videoTimeout = null;
+let videoReceived = false;
+let audioReceived = false;
 let attempt = 0;
 
 setInterval(() => {
@@ -78,6 +82,11 @@ function showToast(msg) {
   toast.style.display = 'block';
   setTimeout(() => { toast.style.display = 'none'; }, 4000);
 }
+function sendSignal(obj) {
+  if (dataConn && dataConn.open) {
+    try { dataConn.send(obj); } catch (e) { console.warn('signal send failed', e); }
+  }
+}
 
 async function prepareMic() {
   if (micStream) return micStream;
@@ -94,6 +103,145 @@ async function prepareMic() {
   }
 }
 
+function createPC() {
+  if (pc) { try { pc.close(); } catch (e) {} }
+  pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  // transceivers صريحة: هذا هو الإصلاح الأساسي للفيديو
+  pc.addTransceiver('video', { direction: 'recvonly' });
+  pc.addTransceiver('audio', { direction: 'recvonly' });
+  clog('تم إنشاء اتصال WebRTC — transceivers: فيديو recvonly + صوت recvonly');
+  pc.onicecandidate = (event) => {
+    if (event.candidate) sendSignal({ type: 'ice', candidate: event.candidate });
+  };
+  pc.ontrack = (event) => {
+    const track = event.track;
+    clog(`📥 وصل تراك: ${track.kind} — enabled=${track.enabled} readyState=${track.readyState}`);
+    if (!remoteStream.getTracks().find(t => t.id === track.id)) {
+      remoteStream.addTrack(track);
+    }
+    if (track.kind === 'video') {
+      videoReceived = true;
+      if (videoTimeout) { clearTimeout(videoTimeout); videoTimeout = null; }
+      if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
+    }
+    if (track.kind === 'audio') audioReceived = true;
+    remoteVideo.srcObject = remoteStream;
+    remoteVideo.play()
+      .then(() => {
+        setTimeout(() => {
+          clog(`عنصر الفيديو: ${remoteVideo.videoWidth}x${remoteVideo.videoHeight} readyState=${remoteVideo.readyState} paused=${remoteVideo.paused}`);
+        }, 1000);
+      })
+      .catch((e) => clog('⚠️ تعذّر تشغيل الفيديو تلقائيًا: ' + e.message + ' — اضغط على الفيديو'));
+    babyBadge.textContent = 'كاميرا البيبي: متصلة ✅';
+    babyBadge.className = 'badge green';
+    setStatus('✅ البث المباشر شغال', 'green');
+  };
+  pc.onconnectionstatechange = () => {
+    clog('حالة اتصال WebRTC: ' + pc.connectionState);
+    if (pc.connectionState === 'connected') setStatus('✅ البث المباشر شغال', 'green');
+    else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+      setStatus('⚠️ انقطع الاتصال — جاري إعادة المحاولة…', 'amber');
+      babyBadge.textContent = 'كاميرا البيبي: غير متصلة';
+      babyBadge.className = 'badge';
+      resetPCAndRetry();
+    }
+  };
+  return pc;
+}
+
+function resetPCAndRetry() {
+  if (videoTimeout) { clearTimeout(videoTimeout); videoTimeout = null; }
+  if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+  videoReceived = false;
+  audioReceived = false;
+  micAdded = false;
+  remoteStream = new MediaStream();
+  scheduleRetry();
+}
+
+async function handleSignal(data) {
+  if (!data || !data.type) return;
+  try {
+    if (data.type === 'offer') {
+      clog('📨 وصل عرض (offer) من موبايل البيبي');
+      createPC();
+      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSignal({ type: 'answer', sdp: answer });
+      clog('📤 تم إرسال الإجابة (answer)');
+      armVideoTimeout();
+    } else if (data.type === 'answer') {
+      if (!pc) return;
+      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      clog('📨 وصلت إجابة على عرض إعادة التفاوض (التحدث)');
+    } else if (data.type === 'ice' && data.candidate) {
+      if (!pc) return;
+      await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+    } else if (data.type === 'motion-alert') {
+      addAlert('🏃', `حركة عند البيبي! (مستوى ${data.level || ''}%)`);
+      showToast('⚠️ حركة عند البيبي!');
+    } else if (data.type === 'sound-alert') {
+      addAlert('🔊', `صوت عالي عند البيبي — ممكن يكون بيبكي (مستوى ${data.level || ''}%)`);
+      showToast('🔊 صوت عالي عند البيبي!');
+    }
+  } catch (e) {
+    console.warn('signal error', e);
+    clog('⚠️ خطأ في الإشارات: ' + (e.message || e));
+  }
+}
+
+function armVideoTimeout() {
+  if (videoTimeout) clearTimeout(videoTimeout);
+  videoTimeout = setTimeout(() => {
+    if (!videoReceived) {
+      if (audioReceived) {
+        clog('⚠️ وصل الصوت فقط، ولم يصل تراك فيديو خلال 10 ثوانٍ — جاري إعادة الاتصال من جديد');
+        addAlert('⚠️', 'وصل الصوت بس مفيش فيديو — جاري إعادة الاتصال…');
+      } else {
+        clog('⏱️ لم يصل أي تراك خلال 10 ثوانٍ — جاري إعادة الاتصال');
+      }
+      resetPCAndRetry();
+      // أرسل join من جديد ليطلب عرضًا جديدًا من البيبي
+      sendSignal({ type: 'join', role: 'parent' });
+    }
+  }, 10000);
+}
+
+function connectData() {
+  if (!peer || peer.destroyed) return;
+  if (dataConn && dataConn.open) { sendSignal({ type: 'join', role: 'parent' }); return; }
+  attempt++;
+  clog(`محاولة اتصال رقم ${attempt} بموبايل البيبي (${BABY_PEER_ID})…`);
+  setStatus('⏳ بانتظار موبايل البيبي… (محاولة ' + attempt + ')', 'red');
+  try {
+    dataConn = peer.connect(BABY_PEER_ID, { reliable: true });
+  } catch (e) {
+    clog('❌ فشل فتح قناة الإشارات: ' + (e.message || e));
+    scheduleRetry();
+    return;
+  }
+  dataConn.on('open', () => {
+    clog('✅ قناة الإشارات مفتوحة مع موبايل البيبي');
+    sendSignal({ type: 'join', role: 'parent' });
+  });
+  dataConn.on('data', handleSignal);
+  dataConn.on('error', (err) => clog('⚠️ خطأ في قناة الإشارات: ' + (err.type || err)));
+  dataConn.on('close', () => {
+    clog('⚠️ أُغلقت قناة الإشارات — جاري إعادة الاتصال…');
+    dataConn = null;
+    scheduleRetry();
+  });
+}
+
+function scheduleRetry() {
+  if (retryTimer) return;
+  retryTimer = setInterval(() => {
+    if (peer && !peer.destroyed) connectData();
+  }, 3000);
+}
+
 function initPeer() {
   if (peer) return;
   if (typeof Peer === 'undefined') {
@@ -107,124 +255,35 @@ function initPeer() {
   peer.on('open', (id) => {
     clog('✅ تم التسجيل في PeerJS — ' + id);
     addAlert('ℹ️', 'انضممت للغرفة ' + room + ' — بانتظار موبايل البيبي…');
-    connectToBaby();
+    connectData();
   });
-
   peer.on('error', (err) => {
     console.warn('PeerJS error', err);
     clog('⚠️ خطأ PeerJS: ' + (err.type || err.message || err));
-    if (err.type === 'network' || err.type === 'server-error') {
-      setStatus('⚠️ مشكلة في شبكة PeerJS — جرّب إعادة تحميل الصفحة', 'amber');
-    }
   });
-
   peer.on('disconnected', () => {
     clog('⚠️ انقطع الاتصال بسيرفر PeerJS — جاري إعادة الاتصال…');
     try { peer.reconnect(); } catch (e) {}
   });
 }
 
-function connectToBaby() {
-  if (mediaCall || !peer || peer.destroyed) return;
-  attempt++;
-  clog(`محاولة اتصال رقم ${attempt} بموبايل البيبي (${BABY_PEER_ID})…`);
-  setStatus('⏳ بانتظار موبايل البيبي… (محاولة ' + attempt + ')', 'red');
-  try {
-    // مكالمة مشاهدة بدون أي ستريم من طرفنا — المايك ليس مطلوبًا هنا
-    mediaCall = peer.call(BABY_PEER_ID, undefined, { metadata: { purpose: 'view' } });
-  } catch (e) {
-    console.warn('call failed', e);
-    clog('❌ فشل إنشاء المكالمة: ' + (e.message || e));
-    mediaCall = null;
-    scheduleRetry();
-    return;
-  }
-
-  // لو لم يصل أي ستريم خلال 10 ثوانٍ، أغلق وحاول من جديد
-  if (streamTimeout) clearTimeout(streamTimeout);
-  streamTimeout = setTimeout(() => {
-    if (!streamReceived && mediaCall) {
-      clog('⏱️ لم يصل فيديو خلال 10 ثوانٍ — إعادة المحاولة (قد تكون الشبكة بطيئة أو موبايل البيبي غير متصل بعد)');
-      try { mediaCall.close(); } catch (e) {}
-      mediaCall = null;
-      scheduleRetry();
-    }
-  }, 10000);
-
-  mediaCall.on('stream', (remoteStream) => {
-    streamReceived = true;
-    if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null; }
-    if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
-    remoteVideo.srcObject = remoteStream;
-    remoteVideo.play().catch((e) => clog('⚠️ تعذّر تشغيل الفيديو تلقائيًا: ' + e.message + ' — اضغط على الفيديو'));
-    babyBadge.textContent = 'كاميرا البيبي: متصلة ✅';
-    babyBadge.className = 'badge green';
-    setStatus('✅ البث المباشر شغال', 'green');
-    clog('✅ وصل بث الفيديو من موبايل البيبي');
-    addAlert('📷', 'موبايل البيبي متصل — البث شغال');
-  });
-
-  mediaCall.on('error', (err) => {
-    console.warn('call error', err);
-    clog('❌ خطأ في المكالمة: ' + (err.type || err.message || err) + ' — تأكد أن موبايل البيبي مفتوح على نفس الكود');
-    if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null; }
-    mediaCall = null;
-    scheduleRetry();
-  });
-  mediaCall.on('close', () => {
-    if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null; }
-    const wasStreaming = streamReceived;
-    mediaCall = null;
-    streamReceived = false;
-    babyBadge.textContent = 'كاميرا البيبي: غير متصلة';
-    babyBadge.className = 'badge';
-    setStatus('⏳ بانتظار موبايل البيبي…', 'red');
-    if (wasStreaming) {
-      clog('⚠️ انقطع البث — جاري إعادة الاتصال…');
-      addAlert('⚠️', 'انقطع الاتصال بموبايل البيبي — جاري إعادة المحاولة…');
-    }
-    scheduleRetry();
-  });
-
-  // قناة بيانات للتنبيهات
-  try {
-    dataConn = peer.connect(BABY_PEER_ID, { reliable: true });
-    dataConn.on('open', () => clog('✅ قناة التنبيهات متصلة'));
-    dataConn.on('data', (data) => {
-      if (!data || !data.type) return;
-      if (data.type === 'motion-alert') {
-        addAlert('🏃', `حركة عند البيبي! (مستوى ${data.level || ''}%)`);
-        showToast('⚠️ حركة عند البيبي!');
-      } else if (data.type === 'sound-alert') {
-        addAlert('🔊', `صوت عالي عند البيبي — ممكن يكون بيبكي (مستوى ${data.level || ''}%)`);
-        showToast('🔊 صوت عالي عند البيبي!');
-      }
-    });
-    dataConn.on('error', (err) => clog('⚠️ خطأ في قناة التنبيهات: ' + (err.type || err)));
-  } catch (e) { console.warn('data connection failed', e); }
-}
-
-function scheduleRetry() {
-  if (retryTimer) return;
-  retryTimer = setInterval(() => {
-    if (!mediaCall && peer && !peer.destroyed) connectToBaby();
-  }, 3000);
-}
-
-// ---------- التحدث: مكالمة ثانية منفصلة، تُفتح فقط عند الضغط ----------
+// ---------- التحدث: إضافة تراك المايك للاتصال الحالي + إعادة تفاوض ----------
 talkBtn.onclick = async () => {
   if (talking) {
     talking = false;
     if (micTrack) micTrack.enabled = false;
-    if (talkCall) { try { talkCall.close(); } catch (e) {} talkCall = null; }
     talkBtn.textContent = '🎙️ اضغط للتحدث مع البيبي';
     talkBtn.classList.remove('talking');
-    clog('⏸️ أوقفت التحدث');
+    clog('⏸️ أوقفت التحدث (المايك مكتوم، الاتصال مستمر)');
     return;
   }
   const stream = await prepareMic();
   if (!micTrack) {
     alert('للتحدث مع البيبي لازم تسمح بالمايك على موبايلك. المشاهدة هتشتغل عادي من غيره.');
+    return;
+  }
+  if (!pc) {
+    alert('لسه مفيش اتصال بموبايل البيبي — استنى الفيديو يظهر الأول.');
     return;
   }
   talking = true;
@@ -234,11 +293,16 @@ talkBtn.onclick = async () => {
   clog('🎙️ بدأت التحدث مع البيبي');
   addAlert('🎙️', 'بدأت التحدث مع البيبي');
   try {
-    talkCall = peer.call(BABY_PEER_ID, stream, { metadata: { purpose: 'talk' } });
-    talkCall.on('error', (err) => clog('⚠️ خطأ في مكالمة التحدث: ' + (err.type || err)));
-    talkCall.on('close', () => { talkCall = null; });
+    if (!micAdded) {
+      pc.addTrack(micTrack, micStream);
+      micAdded = true;
+      clog('أُضيف تراك المايك للاتصال — جاري إعادة التفاوض…');
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignal({ type: 'offer', sdp: offer });
+    }
   } catch (e) {
-    clog('❌ فشل فتح مكالمة التحدث: ' + (e.message || e));
+    clog('❌ فشل إعادة التفاوض للتحدث: ' + (e.message || e));
   }
 };
 
