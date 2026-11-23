@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>👀 مشاهدة البيبي — Baby Monitor</title>
-<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <div class="wrap wide">
@@ -48,12 +48,12 @@
     <ul class="log" id="alerts"><li>لا توجد تنبيهات بعد — النظام شغال ومراقب 👀</li></ul>
   </div>
 
-  <button class="btn danger" onclick="location.href='/'">الخروج من الغرفة</button>
+  <button class="btn danger" onclick="location.href='index.html'">الخروج من الغرفة</button>
 </div>
 
 <div class="toast" id="toast"></div>
 
-<script src="/socket.io/socket.io.js"></script>
-<script src="/js/parent.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="js/parent.js"></script>
 </body>
 </html>

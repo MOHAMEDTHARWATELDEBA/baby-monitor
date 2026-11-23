@@ -4,13 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>👶 جهاز مراقبة البيبي</title>
-<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <div class="wrap">
   <div class="logo">👶</div>
   <h1>جهاز مراقبة البيبي</h1>
-  <p class="sub">موبايل جنب البيبي ككاميرا ومايك، وموبايلك التاني تشوف وتسمع وتتكلم معاه من أي مكان — مع كشف حركة وصوت.</p>
+  <p class="sub">موبايل جنب البيبي ككاميرا ومايك، وموبايلك التاني تشوف وتسمع وتتكلم معاه من أي مكان — مع كشف حركة وصوت. يعمل مباشرة من GitHub Pages، بدون سيرفر خاص.</p>
 
   <div class="card">
     <h2>📷 موبايل البيبي</h2>
@@ -31,13 +31,13 @@
     <h2>⚠️ مهم قبل الاستخدام</h2>
     <p>
       • لازم الموبايلين يكونوا متصلين بالإنترنت.<br>
-      • الكاميرا والمايك بيشتغلوا فقط على <b>HTTPS</b> (أو localhost للتجربة). لو هتشغّله من أي مكان، انشر السيرفر على Render / Railway — الطريقة في ملف README.<br>
+      • الكاميرا والمايك بيشتغلوا فقط على <b>HTTPS</b> — و GitHub Pages بيوفر HTTPS تلقائيًا.<br>
       • سيب موبايل البيبي في الشاحن، والشاشة مفتوحة، والصوت مفتوح عشان يسمعك.<br>
       • ده مشروع منزلي للمراقبة، مش بديل عن وجود شخص بالغ قريب من الطفل.
     </p>
   </div>
 
-  <footer>صُنع بحب ❤️ — Baby Monitor Web App (WebRTC)</footer>
+  <footer>صُنع بحب ❤️ — Baby Monitor Web App (WebRTC + PeerJS)</footer>
 </div>
 
 <script>
@@ -50,18 +50,18 @@
 
   document.getElementById('createBtn').onclick = () => {
     const code = genCode();
-    const url = `${location.origin}/baby.html?room=${code}`;
+    const url = new URL('baby.html', location.href);
+    url.searchParams.set('room', code);
     document.getElementById('createdHint').innerHTML =
       `كود الغرفة: <b style="color:#fff;font-size:20px;letter-spacing:3px">${code}</b><br>` +
       `افتح الرابط ده على موبايل البيبي:<br><a href="${url}">${url}</a>`;
-    // افتح صفحة البيبي مباشرة في نفس المتصفح لو ده موبايل البيبي
-    location.href = url;
+    location.href = url.toString();
   };
 
   document.getElementById('joinBtn').onclick = () => {
     const code = document.getElementById('roomInput').value.trim().toUpperCase();
     if (!code) return alert('اكتب كود الغرفة الأول');
-    location.href = `/parent.html?room=${encodeURIComponent(code)}`;
+    location.href = `parent.html?room=${encodeURIComponent(code)}`;
   };
 
   document.getElementById('roomInput').addEventListener('keydown', (e) => {

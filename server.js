@@ -11,9 +11,12 @@
  * - getUserMedia يتطلب HTTPS (أو localhost للتجربة المحلية).
  * - للاتصال من أي مكان: انشر السيرفر على Render / Railway / Fly.io
  *   وافتح الرابط الـ HTTPS الناتج من الموبايلين.
+ * النسخة الأساسية للمشروع الآن ثابتة وتعمل من GitHub Pages عبر PeerJS
+ * (انظر docs/). هذا السيرفر اختياري، للتشغيل المحلي أو على Render،
+ * ويخدم نفس ملفات docs/، مع إشارات Socket.io بدل PeerJS.
  * - STUN المجاني من Google يكفي في أغلب الشبكات المنزلية.
  *   لو شبكتك صارمة (CGNAT / فايروول)، أضف TURN مدفوع/مجاني في
- *   rtcConfig داخل ملفات public/js.
+ *   rtcConfig داخل ملفات docs/js.
  */
 
 const express = require('express');
@@ -29,7 +32,7 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3000;
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'docs')));
 app.get('/health', (req, res) => res.json({ ok: true, rooms: rooms.size }));
 
 // roomId -> { baby: socketId | null, parent: socketId | null, createdAt }

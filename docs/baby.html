@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>📷 موبايل البيبي — Baby Monitor</title>
-<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <div class="wrap wide">
@@ -52,13 +52,13 @@
     <ul class="log" id="log"><li>تم فتح صفحة البيبي…</li></ul>
   </div>
 
-  <button class="btn danger" onclick="location.href='/'">إيقاف المراقبة والخروج</button>
+  <button class="btn danger" onclick="location.href='index.html'">إيقاف المراقبة والخروج</button>
   <footer>خلي الموبايل في الشاحن 🔌 والشاشة مفتوحة — فعّل قفل الشاشة التلقائي على "أبدًا" من الإعدادات إن أمكن.</footer>
 </div>
 
 <canvas id="motionCanvas" width="160" height="120" style="display:none"></canvas>
 
-<script src="/socket.io/socket.io.js"></script>
-<script src="/js/baby.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="js/baby.js"></script>
 </body>
 </html>
