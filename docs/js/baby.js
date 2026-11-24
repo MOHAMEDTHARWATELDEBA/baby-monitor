@@ -14,13 +14,34 @@ if (!room) location.href = 'index.html';
 document.getElementById('roomCode').textContent = room;
 
 const PEER_ID = `bm-${room}-baby`;
-const ICE_SERVERS = [
+// سيرفرات ICE: STUN من Google وCloudflare + TURN من Metered بنظام
+// المصادقة المؤقتة (TURN REST auth) — تُحسب محليًا في المتصفح.
+// بيانات openrelayproject القديمة توقفت عن إنتاج أي مرشح relay
+// (السجل على صفحة الأب أظهر relay: 0 ثم ICE failed).
+let ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
 ];
+async function buildIceServers() {
+  try {
+    const secret = 'openrelayprojectsecret';
+    const username = String(Math.floor(Date.now() / 1000) + 86400);
+    const key = await crypto.subtle.importKey(
+      'raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+    const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(username));
+    const password = btoa(String.fromCharCode(...new Uint8Array(sig)));
+    ICE_SERVERS = ICE_SERVERS.concat([
+      { urls: 'turn:staticauth.openrelay.metered.ca:80', username, credential: password },
+      { urls: 'turn:staticauth.openrelay.metered.ca:443', username, credential: password },
+      { urls: 'turn:staticauth.openrelay.metered.ca:443?transport=tcp', username, credential: password },
+      { urls: 'turns:staticauth.openrelay.metered.ca:443?transport=tcp', username, credential: password },
+    ]);
+  } catch (e) {
+    console.warn('TURN credentials unavailable, STUN only', e);
+  }
+}
+const iceReady = buildIceServers();
 const video = document.getElementById('localVideo');
 const parentAudio = document.getElementById('parentAudio');
 const statusBadge = document.getElementById('statusBadge');
@@ -31,6 +52,7 @@ const logEl = document.getElementById('log');
 let peer = null;
 let dataConn = null;
 let pc = null;
+let pendingCandidates = [];
 let localStream = null;
 let facingMode = 'environment';
 let wakeLock = null;
@@ -66,6 +88,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 async function startCamera() {
+  await iceReady;
   try {
     if (localStream) {
       // لو الكاميرا اتبدلت وكان في اتصال شغال، استبدل التراكات بدل إيقافها
@@ -149,6 +172,13 @@ async function handleSignal(data) {
       createPC();
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      if (pendingCandidates.length) {
+        const n = pendingCandidates.length;
+        for (const c of pendingCandidates.splice(0)) {
+          try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) {}
+        }
+        log(`تمت إضافة ${n} مرشح ICE مبكر من الأب/الأم`);
+      }
       sendSignal({ type: 'offer', sdp: offer });
       log('تم إرسال العرض (offer) — فيديو + صوت');
     } else if (data.type === 'answer') {
@@ -164,7 +194,7 @@ async function handleSignal(data) {
       sendSignal({ type: 'answer', sdp: answer });
       log('تم الرد على عرض إعادة التفاوض');
     } else if (data.type === 'ice' && data.candidate) {
-      if (!pc) return;
+      if (!pc) { pendingCandidates.push(data.candidate); return; }
       await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
     }
   } catch (e) {

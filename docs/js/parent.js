@@ -15,13 +15,36 @@ document.getElementById('roomCode').textContent = room;
 
 const BABY_PEER_ID = `bm-${room}-baby`;
 const MY_PEER_ID = `bm-${room}-parent-${Math.floor(Math.random() * 100000)}`;
-const ICE_SERVERS = [
+// سيرفرات ICE: STUN من Google وCloudflare + TURN من Metered بنظام
+// المصادقة المؤقتة (TURN REST auth): اسم المستخدم = وقت انتهاء،
+// وكلمة المرور = base64(HMAC-SHA1(secret, username)) — تُحسب محليًا
+// في المتصفح بدون سيرفر. بيانات openrelayproject القديمة توقفت عن
+// إنتاج أي مرشح relay (السجل أظهر relay: 0 ثم ICE failed)، لذلك
+// استُبدلت بهذه الطريقة الموثقة من Metered نفسه (staticauth).
+let ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
 ];
+async function buildIceServers() {
+  try {
+    const secret = 'openrelayprojectsecret';
+    const username = String(Math.floor(Date.now() / 1000) + 86400);
+    const key = await crypto.subtle.importKey(
+      'raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+    const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(username));
+    const password = btoa(String.fromCharCode(...new Uint8Array(sig)));
+    ICE_SERVERS = ICE_SERVERS.concat([
+      { urls: 'turn:staticauth.openrelay.metered.ca:80', username, credential: password },
+      { urls: 'turn:staticauth.openrelay.metered.ca:443', username, credential: password },
+      { urls: 'turn:staticauth.openrelay.metered.ca:443?transport=tcp', username, credential: password },
+      { urls: 'turns:staticauth.openrelay.metered.ca:443?transport=tcp', username, credential: password },
+    ]);
+  } catch (e) {
+    console.warn('TURN credentials unavailable, STUN only', e);
+  }
+}
+const iceReady = buildIceServers();
 const remoteVideo = document.getElementById('remoteVideo');
 const statusBadge = document.getElementById('statusBadge');
 const babyBadge = document.getElementById('babyBadge');
@@ -54,6 +77,7 @@ let videoReceived = false;
 let audioReceived = false;
 let relayCandidates = 0;
 let iceReceived = 0;
+let pendingCandidates = [];
 let iceWatchdog = null;
 let attempt = 0;
 
@@ -203,7 +227,7 @@ function attemptPlay(n) {
     .catch((e) => {
       if (n < 3) {
         clog(`⚠️ تعذّر تشغيل الفيديو: ${e.message} — إعادة المحاولة…`);
-        setTimeout(() => attemptPlay(n + 1), 800);
+        setTimeout(() => { if (pc && remoteVideo.srcObject === remoteStream) attemptPlay(n + 1); }, 800);
       } else {
         playStarted = false;
         clog('⚠️ تعذّر تشغيل الفيديو تلقائيًا: ' + e.message + ' — اضغط زر التشغيل أو على الفيديو نفسه');
@@ -215,6 +239,7 @@ function attemptPlay(n) {
 function resetPCAndRetry() {
   if (videoTimeout) { clearTimeout(videoTimeout); videoTimeout = null; }
   if (iceWatchdog) { clearTimeout(iceWatchdog); iceWatchdog = null; }
+  pendingCandidates = [];
   if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   videoReceived = false;
   audioReceived = false;
@@ -236,6 +261,7 @@ async function unmuteAndPlay() {
   } catch (e) {
     clog('⚠️ تعذّر التشغيل باللمسة: ' + e.message + ' — إعادة المحاولة…');
     setTimeout(async () => {
+      if (!pc) return;
       try {
         await remoteVideo.play();
         if (playBtn) playBtn.style.display = 'none';
@@ -260,6 +286,15 @@ async function handleSignal(data) {
       await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
+      // المرشحات التي وصلت قبل إنشاء الاتصال كانت تُحذف صامتة —
+      // أضفها الآن بعد أن أصبح الاتصال موجودًا
+      if (pendingCandidates.length) {
+        const n = pendingCandidates.length;
+        for (const c of pendingCandidates.splice(0)) {
+          try { await pc.addIceCandidate(new RTCIceCandidate(c)); iceReceived++; } catch (e) {}
+        }
+        clog(`تمت إضافة ${n} مرشح ICE مبكر من البيبي`);
+      }
       sendSignal({ type: 'answer', sdp: answer });
       clog('📤 تم إرسال الإجابة (answer)');
       armVideoTimeout();
@@ -269,7 +304,11 @@ async function handleSignal(data) {
       await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
       clog('📨 وصلت إجابة على عرض إعادة التفاوض (التحدث)');
     } else if (data.type === 'ice' && data.candidate) {
-      if (!pc) return;
+      if (!pc) {
+        // الاتصال لسه متعملش (العرض لسه موصلش) — احفظ المرشح بدل حذفه
+        pendingCandidates.push(data.candidate);
+        return;
+      }
       iceReceived++;
       if (iceReceived === 1) {
         const parts = (data.candidate.candidate || '').split(' ');
@@ -444,4 +483,5 @@ document.getElementById('fullBtn').onclick = () => {
 
 document.getElementById('reconnectBtn').onclick = () => location.reload();
 
-initPeer();
+// انتظر تجهيز بيانات TURN قبل التسجيل في PeerJS
+iceReady.then(() => initPeer());
