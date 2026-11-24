@@ -80,6 +80,7 @@ let relayCandidates = 0;
 let iceReceived = 0;
 let pendingCandidates = [];
 let iceWatchdog = null;
+let watchdogExtensions = 0;
 let attempt = 0;
 
 setInterval(() => {
@@ -177,6 +178,10 @@ function createPC() {
     }
     if (track.kind === 'video') {
       videoReceived = true;
+      // لو تراك الكاميرا عند البيبي توقف (الشاشة مقفولة مثلًا)،
+      // المتصفح يبعت فريمات سوداء 2x2 — سجّل ذلك بوضوح
+      track.onmute = () => clog('⚠️ تراك الفيديو البعيد توقف (muted) — كاميرا البيبي متوقفة؟ افتح صفحة البيبي وخلي الشاشة شغالة');
+      track.onunmute = () => clog('✅ تراك الفيديو البعيد رجع يشتغل');
       if (videoTimeout) { clearTimeout(videoTimeout); videoTimeout = null; }
       if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
       // التراك "live" لا يعني وصول فريمات: لو بعد 5 ثوانٍ لسه
@@ -290,6 +295,12 @@ async function handleSignal(data) {
   if (!data || !data.type) return;
   try {
     if (data.type === 'offer') {
+      // تجاهل العروض المكررة لو الاتصال شغال بالفعل — عرض جديد
+      // هنا كان يدمر اتصالًا شغالًا ويعيد التفاوض من الصفر
+      if (pc && pc.connectionState === 'connected' && videoReceived) {
+        clog('تم تجاهل عرض مكرر — الاتصال شغال بالفعل');
+        return;
+      }
       clog('📨 وصل عرض (offer) من موبايل البيبي');
       createPC();
       await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
@@ -340,12 +351,22 @@ async function handleSignal(data) {
 function armIceWatchdog() {
   if (iceWatchdog) clearTimeout(iceWatchdog);
   iceWatchdog = setTimeout(() => {
-    if (pc && pc.connectionState !== 'connected') {
-      clog(`⚠️ اتصال WebRTC لسه مش متصل بعد 15 ثانية (اتصال: ${pc.connectionState} — ICE: ${pc.iceConnectionState}) — جاري إعادة الاتصال من جديد`);
-      resetPCAndRetry();
-      sendSignal({ type: 'join', role: 'parent' });
+    if (!pc) return;
+    if (pc.connectionState === 'connected') return;
+    // لو ICE لسه بيحاول (checking) ادّيه فرصة إضافية مرة واحدة
+    // بدل ما ندمر اتصالًا قد ينجح — التدمير كل 15 ثانية كان يمنع
+    // اكتمال التفاوض، خصوصًا مع TURN البطيء
+    if (pc.iceConnectionState === 'checking' && watchdogExtensions < 1) {
+      watchdogExtensions++;
+      clog('⏳ ICE لسه بيحاول — تمديد الانتظار 30 ثانية إضافية');
+      armIceWatchdog();
+      return;
     }
-  }, 15000);
+    clog(`⚠️ اتصال WebRTC لسه مش متصل بعد فترة الانتظار (اتصال: ${pc.connectionState} — ICE: ${pc.iceConnectionState}) — جاري إعادة الاتصال من جديد`);
+    watchdogExtensions = 0;
+    resetPCAndRetry();
+    sendSignal({ type: 'join', role: 'parent' });
+  }, 30000);
 }
 
 function armVideoTimeout() {
@@ -367,7 +388,13 @@ function armVideoTimeout() {
 
 function connectData() {
   if (!peer || peer.destroyed) return;
-  if (dataConn && dataConn.open) { sendSignal({ type: 'join', role: 'parent' }); return; }
+  if (dataConn && dataConn.open) {
+    // لا ترسل join جديد لو فيه اتصال WebRTC شغال بالفعل — إعادة
+    // الـ join كل 3 ثوانٍ كانت تخلي البيبي يبعت عرضًا جديدًا،
+    // والأب يدمر الاتصال الشغال ويعيد التفاوض من جديد بلا نهاية
+    if (!pc || pc.connectionState !== 'connected') sendSignal({ type: 'join', role: 'parent' });
+    return;
+  }
   attempt++;
   clog(`محاولة اتصال رقم ${attempt} بموبايل البيبي (${BABY_PEER_ID})…`);
   setStatus('⏳ بانتظار موبايل البيبي… (محاولة ' + attempt + ')', 'red');
@@ -493,4 +520,5 @@ document.getElementById('fullBtn').onclick = () => {
 document.getElementById('reconnectBtn').onclick = () => location.reload();
 
 // انتظر تجهيز بيانات TURN قبل التسجيل في PeerJS
+clog('إصدار parent.js: v5 — منع إعادة التفاوض المدمرة + تحذير تراك muted');
 iceReady.then(() => initPeer());

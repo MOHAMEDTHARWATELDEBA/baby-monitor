@@ -87,6 +87,10 @@ async function requestWakeLock() {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') requestWakeLock();
 });
+// أعد طلب منع إطفاء الشاشة كل 30 ثانية — القفل قد يُسحب في الخلفية
+setInterval(() => {
+  if (document.visibilityState === 'visible') requestWakeLock();
+}, 30000);
 
 async function startCamera() {
   await iceReady;
@@ -115,6 +119,18 @@ async function startCamera() {
     video.srcObject = localStream;
     const v = localStream.getVideoTracks()[0];
     const a = localStream.getAudioTracks()[0];
+    if (v) {
+      // لو الشاشة اتقفلت أو التبويب راح للخلفية، المتصفح يوقف
+      // الكاميرا (track muted) والطرف الآخر يستقبل فريمات سوداء 2x2
+      v.onmute = () => {
+        log('⚠️ تراك الكاميرا توقف (muted) — الشاشة مقفولة أو الصفحة في الخلفية؟ افتح الصفحة وخلي الشاشة شغالة');
+        setStatus('⚠️ الكاميرا متوقفة — افتح الصفحة وخلي الشاشة شغالة', 'amber');
+      };
+      v.onunmute = () => {
+        log('✅ تراك الكاميرا رجع يشتغل');
+        setStatus('✅ الكاميرا شغالة — بانتظار الأب/الأم', 'green');
+      };
+    }
     log(`الكاميرا والمايك شغالين — فيديو: ${v ? v.label + ' (' + v.readyState + ')' : 'مفقود!'}، صوت: ${a ? a.readyState : 'مفقود!'}`);
     if (!v) setStatus('❌ تراك الفيديو مفقود من الكاميرا — جرّب إعادة تحميل الصفحة', 'red');
     else setStatus('✅ الكاميرا شغالة — بانتظار الأب/الأم', 'green');
@@ -360,4 +376,5 @@ document.getElementById('flipBtn').onclick = async () => {
   log('تم تبديل الكاميرا');
 };
 
+log('إصدار baby.js: v5 — تحذير توقف الكاميرا + تجديد منع إطفاء الشاشة');
 startCamera();
