@@ -143,19 +143,7 @@ function createPC() {
       // مكتوم أولًا: التشغيل المكتوم مسموح تلقائيًا، والصوت يُشغَّل بلمسة
       remoteVideo.muted = true;
       muted = true;
-      remoteVideo.play()
-        .then(() => {
-          clog('✅ الفيديو شغال (مكتوم مؤقتًا) — اضغط زر التشغيل لسماع الصوت');
-          if (playBtn) playBtn.style.display = 'block';
-          setTimeout(() => {
-            clog(`عنصر الفيديو: ${remoteVideo.videoWidth}x${remoteVideo.videoHeight} readyState=${remoteVideo.readyState} paused=${remoteVideo.paused}`);
-          }, 1000);
-        })
-        .catch((e) => {
-          playStarted = false;
-          clog('⚠️ تعذّر تشغيل الفيديو تلقائيًا: ' + e.message + ' — اضغط زر التشغيل أو على الفيديو نفسه');
-          if (playBtn) playBtn.style.display = 'block';
-        });
+      attemptPlay(0);
     }
     babyBadge.textContent = 'كاميرا البيبي: متصلة ✅';
     babyBadge.className = 'badge green';
@@ -172,6 +160,31 @@ function createPC() {
     }
   };
   return pc;
+}
+
+// تشغيل الفيديو مع إعادة محاولة تلقائية: لمسة المستخدم على
+// أزرار التحكم المدمجة في الفيديو كانت تنادي pause() وتقطع
+// طلب play() المعلق ("interrupted by a call to pause()")،
+// لذلك أُزيلت الأزرار المدمجة ويُعاد التشغيل تلقائيًا حتى 3 مرات.
+function attemptPlay(n) {
+  remoteVideo.play()
+    .then(() => {
+      clog('✅ الفيديو شغال (مكتوم مؤقتًا) — اضغط زر التشغيل لسماع الصوت');
+      if (playBtn) playBtn.style.display = 'block';
+      setTimeout(() => {
+        clog(`عنصر الفيديو: ${remoteVideo.videoWidth}x${remoteVideo.videoHeight} readyState=${remoteVideo.readyState} paused=${remoteVideo.paused}`);
+      }, 1000);
+    })
+    .catch((e) => {
+      if (n < 3) {
+        clog(`⚠️ تعذّر تشغيل الفيديو: ${e.message} — إعادة المحاولة…`);
+        setTimeout(() => attemptPlay(n + 1), 800);
+      } else {
+        playStarted = false;
+        clog('⚠️ تعذّر تشغيل الفيديو تلقائيًا: ' + e.message + ' — اضغط زر التشغيل أو على الفيديو نفسه');
+        if (playBtn) playBtn.style.display = 'block';
+      }
+    });
 }
 
 function resetPCAndRetry() {
@@ -195,7 +208,16 @@ async function unmuteAndPlay() {
     if (playBtn) playBtn.style.display = 'none';
     clog('✅ تم تشغيل الفيديو والصوت بلمسة المستخدم');
   } catch (e) {
-    clog('⚠️ تعذّر التشغيل باللمسة: ' + e.message);
+    clog('⚠️ تعذّر التشغيل باللمسة: ' + e.message + ' — إعادة المحاولة…');
+    setTimeout(async () => {
+      try {
+        await remoteVideo.play();
+        if (playBtn) playBtn.style.display = 'none';
+        clog('✅ تم تشغيل الفيديو والصوت بلمسة المستخدم');
+      } catch (e2) {
+        clog('⚠️ تعذّر التشغيل باللمسة مرة أخرى: ' + e2.message);
+      }
+    }, 600);
   }
 }
 if (playBtn) playBtn.onclick = unmuteAndPlay;
