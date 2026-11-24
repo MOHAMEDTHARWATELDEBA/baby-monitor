@@ -35,6 +35,7 @@ async function buildIceServers() {
     const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(username));
     const password = btoa(String.fromCharCode(...new Uint8Array(sig)));
     ICE_SERVERS = ICE_SERVERS.concat([
+      { urls: 'turn:staticauth.openrelay.metered.ca:3478', username, credential: password },
       { urls: 'turn:staticauth.openrelay.metered.ca:80', username, credential: password },
       { urls: 'turn:staticauth.openrelay.metered.ca:443', username, credential: password },
       { urls: 'turn:staticauth.openrelay.metered.ca:443?transport=tcp', username, credential: password },
@@ -152,7 +153,15 @@ function createPC() {
       const type = event.candidate.candidate.split(' ')[7] || '?';
       if (type === 'relay') relayCandidates++;
       clog(`مرشح ICE محلي: ${type} (${event.candidate.protocol})`);
-      sendSignal({ type: 'ice', candidate: event.candidate });
+      // مهم: أرسل المرشح ككائن عادي — كائن RTCIceCandidate نفسه لا
+      // يُسلسل (خصائصه getters على الـ prototype)، فيصل للطرف الآخر
+      // فارغًا فتُحذف كل المرشحات البعيدة صامتة
+      sendSignal({ type: 'ice', candidate: {
+        candidate: event.candidate.candidate,
+        sdpMid: event.candidate.sdpMid,
+        sdpMLineIndex: event.candidate.sdpMLineIndex,
+        usernameFragment: event.candidate.usernameFragment,
+      }});
     } else {
       clog(`انتهى تجميع مرشحات ICE — relay: ${relayCandidates}`);
     }

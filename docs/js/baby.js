@@ -32,6 +32,7 @@ async function buildIceServers() {
     const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(username));
     const password = btoa(String.fromCharCode(...new Uint8Array(sig)));
     ICE_SERVERS = ICE_SERVERS.concat([
+      { urls: 'turn:staticauth.openrelay.metered.ca:3478', username, credential: password },
       { urls: 'turn:staticauth.openrelay.metered.ca:80', username, credential: password },
       { urls: 'turn:staticauth.openrelay.metered.ca:443', username, credential: password },
       { urls: 'turn:staticauth.openrelay.metered.ca:443?transport=tcp', username, credential: password },
@@ -136,7 +137,12 @@ function createPC() {
     log(`أُضيف تراك للإرسال: ${track.kind} — ${track.label} (${track.readyState})`);
   });
   pc.onicecandidate = (event) => {
-    if (event.candidate) sendSignal({ type: 'ice', candidate: event.candidate });
+    if (event.candidate) sendSignal({ type: 'ice', candidate: {
+      candidate: event.candidate.candidate,
+      sdpMid: event.candidate.sdpMid,
+      sdpMLineIndex: event.candidate.sdpMLineIndex,
+      usernameFragment: event.candidate.usernameFragment,
+    }});
   };
   pc.oniceconnectionstatechange = () => {
     log('حالة ICE: ' + pc.iceConnectionState);
