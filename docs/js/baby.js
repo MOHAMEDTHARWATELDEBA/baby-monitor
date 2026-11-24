@@ -386,7 +386,14 @@ function setLullaby(on) {
     return;
   }
   if (!lullabyCtx) lullabyCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (lullabyCtx.state === 'suspended') lullabyCtx.resume().catch(() => {});
+  if (lullabyCtx.state === 'suspended') {
+    lullabyCtx.resume().catch(() => {});
+    setTimeout(() => {
+      if (lullabyCtx.state === 'suspended') {
+        log('⚠️ المتصفح منع تشغيل الصوت — المس الشاشة مرة واحدة في صفحة البيبي ثم جرّب مجددًا');
+      }
+    }, 1000);
+  }
   const notes = [523.25, 587.33, 659.25, 783.99, 659.25, 587.33, 523.25, 0];
   let i = 0;
   const playNote = () => {
@@ -462,5 +469,12 @@ document.getElementById('flipBtn').onclick = async () => {
   log('تم تبديل الكاميرا');
 };
 
-log('إصدار baby.js: v5 — تحذير توقف الكاميرا + تجديد منع إطفاء الشاشة');
+// أي لمسة على صفحة البيبي تستأنف الصوت — المتصفح قد يمنع
+// تشغيل الصوت من أمر عن بُعد بدون تفاعل سابق مع الصفحة
+document.addEventListener('pointerdown', () => {
+  if (lullabyCtx && lullabyCtx.state === 'suspended') lullabyCtx.resume().catch(() => {});
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+}, { passive: true });
+
+log('إصدار baby.js: v6 — تحكم عن بُعد بالتهويدة والكاميرا');
 startCamera();

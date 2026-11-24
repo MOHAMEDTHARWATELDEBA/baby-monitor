@@ -489,6 +489,8 @@ function connectData() {
   dataConn.on('open', () => {
     clog('✅ قناة الإشارات مفتوحة مع موبايل البيبي');
     sendSignal({ type: 'join', role: 'parent' });
+    // اطلب قائمة الكاميرات صراحةً — لو فاتت القائمة المرسلة مع الـ join
+    sendSignal({ type: 'cameras-request' });
   });
   dataConn.on('data', handleSignal);
   dataConn.on('error', (err) => clog('⚠️ خطأ في قناة الإشارات: ' + (err.type || err)));
@@ -601,5 +603,5 @@ document.getElementById('fullBtn').onclick = () => {
 document.getElementById('reconnectBtn').onclick = () => location.reload();
 
 // انتظر تجهيز بيانات TURN قبل التسجيل في PeerJS
-clog('إصدار parent.js: v5 — منع إعادة التفاوض المدمرة + تحذير تراك muted');
+clog('إصدار parent.js: v6 — تحكم عن بُعد بالتهويدة والكاميرا');
 iceReady.then(() => initPeer());
