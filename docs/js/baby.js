@@ -57,6 +57,7 @@ let pendingCandidates = [];
 let localStream = null;
 let currentDeviceId = null;
 let cameraList = [];
+let torchOn = false;
 let audioCtx = null, analyserNode = null, audioSourceNode = null;
 let facingMode = 'environment';
 let wakeLock = null;
@@ -230,6 +231,9 @@ async function handleSignal(data) {
     } else if (data.type === 'lullaby') {
       // الأب/الأم يشغّل/يوقف التهويدة عن بُعد
       setLullaby(!!data.on);
+    } else if (data.type === 'torch') {
+      // الأب/الأم يشغّل/يوقف الفلاش عن بُعد
+      setTorch(!!data.on);
     } else if (data.type === 'camera' && data.deviceId) {
       // الأب/الأم يبدّل الكاميرا عن بُعد (واسعة/عادية/أمامية)
       switchCamera(data.deviceId);
@@ -427,6 +431,32 @@ async function sendCameras() {
   } catch (e) { console.warn('enumerateDevices failed', e); }
 }
 
+// ---------- الفلاش: تشغيل/إيقاف عن بُعد من الأب/الأم ----------
+// يعمل على الكاميرا الخلفية فقط، وبعض الموبايلات لا تدعمه من المتصفح
+async function setTorch(on) {
+  const v = localStream ? localStream.getVideoTracks()[0] : null;
+  if (!v) {
+    log('⚠️ لا يوجد تراك فيديو لتشغيل الفلاش');
+    sendSignal({ type: 'torch-state', error: 'no video track' });
+    return;
+  }
+  const caps = v.getCapabilities ? v.getCapabilities() : {};
+  if (!caps.torch) {
+    log('⚠️ موبايل البيبي لا يدعم الفلاش من المتصفح');
+    sendSignal({ type: 'torch-state', error: 'unsupported' });
+    return;
+  }
+  try {
+    await v.applyConstraints({ advanced: [{ torch: on }] });
+    torchOn = on;
+    log(on ? '🔦 تم تشغيل الفلاش' : '🔦 تم إيقاف الفلاش');
+    sendSignal({ type: 'torch-state', on });
+  } catch (e) {
+    log('⚠️ تعذّر تشغيل الفلاش: ' + (e.name || e.message));
+    sendSignal({ type: 'torch-state', error: e.name || 'torch failed' });
+  }
+}
+
 async function switchCamera(deviceId) {
   try {
     const newStream = await navigator.mediaDevices.getUserMedia({
@@ -446,6 +476,8 @@ async function switchCamera(deviceId) {
     attachTrackHandlers(v);
     currentDeviceId = deviceId;
     hookAudioAnalyser(newStream);
+    // التراك الجديد لا يرث حالة الفلاش — أبلغ الأب/الأم أنها أُعيدت
+    if (torchOn) { torchOn = false; sendSignal({ type: 'torch-state', on: false }); }
     const label = (cameraList.find(c => c.id === deviceId) || {}).label || 'كاميرا';
     log(`تم التبديل إلى: ${label}`);
     sendSignal({ type: 'camera-state', label, deviceId });
@@ -476,5 +508,5 @@ document.addEventListener('pointerdown', () => {
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
 }, { passive: true });
 
-log('إصدار baby.js: v6 — تحكم عن بُعد بالتهويدة والكاميرا');
+log('إصدار baby.js: v7 — تحكم عن بُعد بالتهويدة والكاميرا والفلاش');
 startCamera();

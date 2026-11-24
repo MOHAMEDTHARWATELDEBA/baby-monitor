@@ -56,6 +56,7 @@ const talkBtn = document.getElementById('talkBtn');
 const muteBtn = document.getElementById('muteBtn');
 const playBtn = document.getElementById('playBtn');
 const lullabyBtn = document.getElementById('lullabyBtn');
+const torchBtn = document.getElementById('torchBtn');
 const flipBtn = document.getElementById('flipBtn');
 const refreshCamsBtn = document.getElementById('refreshCamsBtn');
 const cameraBtnsEl = document.getElementById('cameraBtns');
@@ -87,6 +88,7 @@ let pendingCandidates = [];
 let iceWatchdog = null;
 let watchdogExtensions = 0;
 let lullabyOn = false;
+let torchOn = false;
 let cameraList = [];
 let currentCameraId = null;
 let attempt = 0;
@@ -342,6 +344,17 @@ if (lullabyBtn) lullabyBtn.onclick = () => {
   sendSignal({ type: 'lullaby', on: lullabyOn });
   clog(lullabyOn ? '🎵 طلب تشغيل التهويدة على موبايل البيبي' : '⏸️ طلب إيقاف التهويدة');
 };
+function updateTorchBtn() {
+  if (!torchBtn) return;
+  torchBtn.textContent = torchOn ? '🔦 إيقاف الفلاش' : '🔦 تشغيل الفلاش';
+}
+if (torchBtn) torchBtn.onclick = () => {
+  if (!connectedToBaby()) return showToast('لسه مفيش اتصال بموبايل البيبي');
+  torchOn = !torchOn;
+  updateTorchBtn();
+  sendSignal({ type: 'torch', on: torchOn });
+  clog(torchOn ? '🔦 طلب تشغيل الفلاش على موبايل البيبي' : '🔦 طلب إيقاف الفلاش');
+};
 if (flipBtn) flipBtn.onclick = () => {
   if (!connectedToBaby()) return showToast('لسه مفيش اتصال بموبايل البيبي');
   sendSignal({ type: 'flip' });
@@ -422,6 +435,18 @@ async function handleSignal(data) {
       lullabyOn = !!data.on;
       updateLullabyBtn();
       clog(lullabyOn ? '🎵 التهويدة شغالة على موبايل البيبي' : '⏸️ التهويدة واقفة على موبايل البيبي');
+    } else if (data.type === 'torch-state') {
+      if (data.error) {
+        torchOn = false;
+        updateTorchBtn();
+        if (data.error === 'unsupported') showToast('⚠️ موبايل البيبي لا يدعم الفلاش من المتصفح');
+        else showToast('⚠️ تعذّر تشغيل الفلاش');
+        clog('⚠️ الفلاش غير متاح: ' + data.error);
+      } else {
+        torchOn = !!data.on;
+        updateTorchBtn();
+        clog(torchOn ? '🔦 الفلاش شغال على موبايل البيبي' : '🔦 الفلاش واقف');
+      }
     }
   } catch (e) {
     console.warn('signal error', e);
@@ -603,5 +628,5 @@ document.getElementById('fullBtn').onclick = () => {
 document.getElementById('reconnectBtn').onclick = () => location.reload();
 
 // انتظر تجهيز بيانات TURN قبل التسجيل في PeerJS
-clog('إصدار parent.js: v6 — تحكم عن بُعد بالتهويدة والكاميرا');
+clog('إصدار parent.js: v7 — تحكم عن بُعد بالتهويدة والكاميرا والفلاش');
 iceReady.then(() => initPeer());
