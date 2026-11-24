@@ -115,6 +115,9 @@ function createPC() {
   pc.onicecandidate = (event) => {
     if (event.candidate) sendSignal({ type: 'ice', candidate: event.candidate });
   };
+  pc.oniceconnectionstatechange = () => {
+    log('حالة ICE: ' + pc.iceConnectionState);
+  };
   pc.ontrack = (event) => {
     // صوت الأب/الأم عند التحدث (إعادة تفاوض من طرف الأب)
     if (event.track.kind === 'audio') {

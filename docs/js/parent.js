@@ -52,6 +52,9 @@ let retryTimer = null;
 let videoTimeout = null;
 let videoReceived = false;
 let audioReceived = false;
+let relayCandidates = 0;
+let iceReceived = 0;
+let iceWatchdog = null;
 let attempt = 0;
 
 setInterval(() => {
@@ -118,8 +121,20 @@ function createPC() {
   pc.addTransceiver('video', { direction: 'recvonly' });
   pc.addTransceiver('audio', { direction: 'recvonly' });
   clog('تم إنشاء اتصال WebRTC — transceivers: فيديو recvonly + صوت recvonly');
+  relayCandidates = 0;
+  iceReceived = 0;
   pc.onicecandidate = (event) => {
-    if (event.candidate) sendSignal({ type: 'ice', candidate: event.candidate });
+    if (event.candidate) {
+      const type = event.candidate.candidate.split(' ')[7] || '?';
+      if (type === 'relay') relayCandidates++;
+      clog(`مرشح ICE محلي: ${type} (${event.candidate.protocol})`);
+      sendSignal({ type: 'ice', candidate: event.candidate });
+    } else {
+      clog(`انتهى تجميع مرشحات ICE — relay: ${relayCandidates}`);
+    }
+  };
+  pc.oniceconnectionstatechange = () => {
+    clog('حالة ICE: ' + pc.iceConnectionState);
   };
   pc.ontrack = (event) => {
     const track = event.track;
@@ -131,6 +146,13 @@ function createPC() {
       videoReceived = true;
       if (videoTimeout) { clearTimeout(videoTimeout); videoTimeout = null; }
       if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
+      // التراك "live" لا يعني وصول فريمات: لو بعد 5 ثوانٍ لسه
+      // مفيش أبعاد للفيديو، يبقى الوسائط (ICE) موصلتش أصلًا
+      setTimeout(() => {
+        if (remoteVideo.videoWidth === 0) {
+          clog(`⚠️ التراك واصل لكن مفيش فريمات فيديو بعد 5 ثوانٍ — اتصال: ${pc ? pc.connectionState : '؟'} — ICE: ${pc ? pc.iceConnectionState : '؟'}`);
+        }
+      }, 5000);
     }
     if (track.kind === 'audio') audioReceived = true;
     // عيّن الستريم وشغّل مرة واحدة فقط: استدعاء play() مع كل تراك
@@ -150,8 +172,11 @@ function createPC() {
     setStatus('✅ البث المباشر شغال', 'green');
   };
   pc.onconnectionstatechange = () => {
-    clog('حالة اتصال WebRTC: ' + pc.connectionState);
-    if (pc.connectionState === 'connected') setStatus('✅ البث المباشر شغال', 'green');
+    clog('حالة اتصال WebRTC: ' + pc.connectionState + ' — ICE: ' + pc.iceConnectionState);
+    if (pc.connectionState === 'connected') {
+      if (iceWatchdog) { clearTimeout(iceWatchdog); iceWatchdog = null; }
+      setStatus('✅ البث المباشر شغال', 'green');
+    }
     else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
       setStatus('⚠️ انقطع الاتصال — جاري إعادة المحاولة…', 'amber');
       babyBadge.textContent = 'كاميرا البيبي: غير متصلة';
@@ -189,6 +214,7 @@ function attemptPlay(n) {
 
 function resetPCAndRetry() {
   if (videoTimeout) { clearTimeout(videoTimeout); videoTimeout = null; }
+  if (iceWatchdog) { clearTimeout(iceWatchdog); iceWatchdog = null; }
   if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   videoReceived = false;
   audioReceived = false;
@@ -237,12 +263,18 @@ async function handleSignal(data) {
       sendSignal({ type: 'answer', sdp: answer });
       clog('📤 تم إرسال الإجابة (answer)');
       armVideoTimeout();
+      armIceWatchdog();
     } else if (data.type === 'answer') {
       if (!pc) return;
       await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
       clog('📨 وصلت إجابة على عرض إعادة التفاوض (التحدث)');
     } else if (data.type === 'ice' && data.candidate) {
       if (!pc) return;
+      iceReceived++;
+      if (iceReceived === 1) {
+        const parts = (data.candidate.candidate || '').split(' ');
+        clog('وصل مرشح ICE من البيبي: ' + (parts[7] || '?'));
+      }
       await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
     } else if (data.type === 'motion-alert') {
       addAlert('🏃', `حركة عند البيبي! (مستوى ${data.level || ''}%)`);
@@ -255,6 +287,17 @@ async function handleSignal(data) {
     console.warn('signal error', e);
     clog('⚠️ خطأ في الإشارات: ' + (e.message || e));
   }
+}
+
+function armIceWatchdog() {
+  if (iceWatchdog) clearTimeout(iceWatchdog);
+  iceWatchdog = setTimeout(() => {
+    if (pc && pc.connectionState !== 'connected') {
+      clog(`⚠️ اتصال WebRTC لسه مش متصل بعد 15 ثانية (اتصال: ${pc.connectionState} — ICE: ${pc.iceConnectionState}) — جاري إعادة الاتصال من جديد`);
+      resetPCAndRetry();
+      sendSignal({ type: 'join', role: 'parent' });
+    }
+  }, 15000);
 }
 
 function armVideoTimeout() {
