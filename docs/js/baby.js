@@ -55,6 +55,9 @@ let dataConn = null;
 let pc = null;
 let pendingCandidates = [];
 let localStream = null;
+let currentDeviceId = null;
+let cameraList = [];
+let audioCtx = null, analyserNode = null, audioSourceNode = null;
 let facingMode = 'environment';
 let wakeLock = null;
 let soundTimer = null;
@@ -92,6 +95,20 @@ setInterval(() => {
   if (document.visibilityState === 'visible') requestWakeLock();
 }, 30000);
 
+function attachTrackHandlers(v) {
+  if (!v) return;
+  // لو الشاشة اتقفلت أو التبويب راح للخلفية، المتصفح يوقف
+  // الكاميرا (track muted) والطرف الآخر يستقبل فريمات سوداء 2x2
+  v.onmute = () => {
+    log('⚠️ تراك الكاميرا توقف (muted) — الشاشة مقفولة أو الصفحة في الخلفية؟ افتح الصفحة وخلي الشاشة شغالة');
+    setStatus('⚠️ الكاميرا متوقفة — افتح الصفحة وخلي الشاشة شغالة', 'amber');
+  };
+  v.onunmute = () => {
+    log('✅ تراك الكاميرا رجع يشتغل');
+    setStatus('✅ الكاميرا شغالة — بانتظار الأب/الأم', 'green');
+  };
+}
+
 async function startCamera() {
   await iceReady;
   try {
@@ -119,18 +136,9 @@ async function startCamera() {
     video.srcObject = localStream;
     const v = localStream.getVideoTracks()[0];
     const a = localStream.getAudioTracks()[0];
-    if (v) {
-      // لو الشاشة اتقفلت أو التبويب راح للخلفية، المتصفح يوقف
-      // الكاميرا (track muted) والطرف الآخر يستقبل فريمات سوداء 2x2
-      v.onmute = () => {
-        log('⚠️ تراك الكاميرا توقف (muted) — الشاشة مقفولة أو الصفحة في الخلفية؟ افتح الصفحة وخلي الشاشة شغالة');
-        setStatus('⚠️ الكاميرا متوقفة — افتح الصفحة وخلي الشاشة شغالة', 'amber');
-      };
-      v.onunmute = () => {
-        log('✅ تراك الكاميرا رجع يشتغل');
-        setStatus('✅ الكاميرا شغالة — بانتظار الأب/الأم', 'green');
-      };
-    }
+    attachTrackHandlers(v);
+    currentDeviceId = v ? v.getSettings().deviceId || null : null;
+    hookAudioAnalyser(localStream);
     log(`الكاميرا والمايك شغالين — فيديو: ${v ? v.label + ' (' + v.readyState + ')' : 'مفقود!'}، صوت: ${a ? a.readyState : 'مفقود!'}`);
     if (!v) setStatus('❌ تراك الفيديو مفقود من الكاميرا — جرّب إعادة تحميل الصفحة', 'red');
     else setStatus('✅ الكاميرا شغالة — بانتظار الأب/الأم', 'green');
@@ -203,6 +211,7 @@ async function handleSignal(data) {
       }
       sendSignal({ type: 'offer', sdp: offer });
       log('تم إرسال العرض (offer) — فيديو + صوت');
+      sendCameras();
     } else if (data.type === 'answer') {
       if (!pc) return;
       await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
@@ -218,6 +227,24 @@ async function handleSignal(data) {
     } else if (data.type === 'ice' && data.candidate) {
       if (!pc) { pendingCandidates.push(data.candidate); return; }
       await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+    } else if (data.type === 'lullaby') {
+      // الأب/الأم يشغّل/يوقف التهويدة عن بُعد
+      setLullaby(!!data.on);
+    } else if (data.type === 'camera' && data.deviceId) {
+      // الأب/الأم يبدّل الكاميرا عن بُعد (واسعة/عادية/أمامية)
+      switchCamera(data.deviceId);
+    } else if (data.type === 'flip') {
+      // دور على الكاميرا التالية في القائمة
+      if (cameraList.length > 1) {
+        const idx = cameraList.findIndex(c => c.id === currentDeviceId);
+        switchCamera(cameraList[(idx + 1) % cameraList.length].id);
+      } else {
+        facingMode = facingMode === 'environment' ? 'user' : 'environment';
+        await startCamera();
+        log('تم تبديل الكاميرا');
+      }
+    } else if (data.type === 'cameras-request') {
+      sendCameras();
     }
   } catch (e) {
     console.warn('signal error', e);
@@ -310,19 +337,27 @@ function startMotionDetection() {
 }
 
 // ---------- كشف الصوت (بكاء / صوت عالي) ----------
+// ربط محلل الصوت بستريم الصوت الحالي — يُعاد ربطه بعد كل تبديل
+// كاميرا، لأن التبديل يستبدل تراك الصوت أيضًا
+function hookAudioAnalyser(stream) {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioSourceNode) { try { audioSourceNode.disconnect(); } catch (e) {} }
+    audioSourceNode = audioCtx.createMediaStreamSource(stream);
+    if (!analyserNode) { analyserNode = audioCtx.createAnalyser(); analyserNode.fftSize = 512; }
+    audioSourceNode.connect(analyserNode);
+  } catch (e) { console.warn('audio analyser hook failed', e); }
+}
+
 let lastSoundAt = 0;
 function startSoundDetection() {
   try {
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const source = audioCtx.createMediaStreamSource(localStream);
-    const analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 512;
-    source.connect(analyser);
-    const data = new Uint8Array(analyser.frequencyBinCount);
+    hookAudioAnalyser(localStream);
+    const data = new Uint8Array(analyserNode.frequencyBinCount);
     const levelEl = document.getElementById('audioLevel');
 
     soundTimer = setInterval(() => {
-      analyser.getByteTimeDomainData(data);
+      analyserNode.getByteTimeDomainData(data);
       let sum = 0;
       for (let i = 0; i < data.length; i++) sum += Math.abs(data[i] - 128);
       const level = Math.round((sum / data.length / 128) * 100);
@@ -339,11 +374,19 @@ function startSoundDetection() {
 
 // ---------- أدوات مساعدة ----------
 let lullabyTimer = null, lullabyCtx = null, lullabyOn = false;
-document.getElementById('lullabyBtn').onclick = (e) => {
-  lullabyOn = !lullabyOn;
-  e.target.textContent = lullabyOn ? '⏸️ إيقاف التهويدة' : '🎵 تشغيل تهويدة';
-  if (!lullabyOn) { clearInterval(lullabyTimer); return; }
+const lullabyBtnEl = document.getElementById('lullabyBtn');
+// تشغيل/إيقاف التهويدة — من زر الصفحة هنا أو بأمر عن بُعد من الأب/الأم
+function setLullaby(on) {
+  lullabyOn = on;
+  lullabyBtnEl.textContent = on ? '⏸️ إيقاف التهويدة' : '🎵 تشغيل تهويدة';
+  if (!on) {
+    clearInterval(lullabyTimer); lullabyTimer = null;
+    log('تم إيقاف التهويدة');
+    sendSignal({ type: 'lullaby-state', on: false });
+    return;
+  }
   if (!lullabyCtx) lullabyCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (lullabyCtx.state === 'suspended') lullabyCtx.resume().catch(() => {});
   const notes = [523.25, 587.33, 659.25, 783.99, 659.25, 587.33, 523.25, 0];
   let i = 0;
   const playNote = () => {
@@ -360,7 +403,50 @@ document.getElementById('lullabyBtn').onclick = (e) => {
   playNote();
   lullabyTimer = setInterval(playNote, 700);
   log('تم تشغيل التهويدة 🎵');
-};
+  sendSignal({ type: 'lullaby-state', on: true });
+}
+lullabyBtnEl.onclick = () => setLullaby(!lullabyOn);
+
+// ---------- كاميرات موبايل البيبي: قائمة + تبديل عن بُعد ----------
+async function sendCameras() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    cameraList = devices.filter(d => d.kind === 'videoinput').map((d, i) => ({
+      id: d.deviceId,
+      label: d.label || `كاميرا ${i + 1}`,
+    }));
+    sendSignal({ type: 'cameras', list: cameraList, current: currentDeviceId });
+    log(`تم إرسال قائمة الكاميرات للأب/الأم: ${cameraList.length} كاميرا`);
+  } catch (e) { console.warn('enumerateDevices failed', e); }
+}
+
+async function switchCamera(deviceId) {
+  try {
+    const newStream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    if (pc) {
+      for (const track of newStream.getTracks()) {
+        const sender = pc.getSenders().find(s => s.track && s.track.kind === track.kind);
+        if (sender) await sender.replaceTrack(track);
+      }
+    }
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = newStream;
+    video.srcObject = localStream;
+    const v = newStream.getVideoTracks()[0];
+    attachTrackHandlers(v);
+    currentDeviceId = deviceId;
+    hookAudioAnalyser(newStream);
+    const label = (cameraList.find(c => c.id === deviceId) || {}).label || 'كاميرا';
+    log(`تم التبديل إلى: ${label}`);
+    sendSignal({ type: 'camera-state', label, deviceId });
+  } catch (e) {
+    log('⚠️ تعذّر التبديل للكاميرا: ' + (e.name || e.message));
+    sendSignal({ type: 'camera-state', error: e.name || 'switch failed' });
+  }
+}
 
 let lightOn = false;
 document.getElementById('lightBtn').onclick = (e) => {

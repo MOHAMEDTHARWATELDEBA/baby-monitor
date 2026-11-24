@@ -55,6 +55,11 @@ const toast = document.getElementById('toast');
 const talkBtn = document.getElementById('talkBtn');
 const muteBtn = document.getElementById('muteBtn');
 const playBtn = document.getElementById('playBtn');
+const lullabyBtn = document.getElementById('lullabyBtn');
+const flipBtn = document.getElementById('flipBtn');
+const refreshCamsBtn = document.getElementById('refreshCamsBtn');
+const cameraBtnsEl = document.getElementById('cameraBtns');
+const cameraLabelEl = document.getElementById('cameraLabel');
 
 // التشغيل التلقائي بالصوت ممنوع في متصفحات الموبايل بدون لمسة
 // من المستخدم، لذلك نبدأ مكتومين (التشغيل المكتوم مسموح) ونترك
@@ -81,6 +86,9 @@ let iceReceived = 0;
 let pendingCandidates = [];
 let iceWatchdog = null;
 let watchdogExtensions = 0;
+let lullabyOn = false;
+let cameraList = [];
+let currentCameraId = null;
 let attempt = 0;
 
 setInterval(() => {
@@ -291,6 +299,60 @@ remoteVideo.addEventListener('click', () => {
   if (remoteVideo.paused || remoteVideo.muted) unmuteAndPlay();
 });
 
+// ---------- التهويدة والكاميرا: تحكم عن بُعد في موبايل البيبي ----------
+function connectedToBaby() {
+  return dataConn && dataConn.open;
+}
+function updateLullabyBtn() {
+  if (!lullabyBtn) return;
+  lullabyBtn.textContent = lullabyOn ? '⏸️ إيقاف التهويدة' : '🎵 تشغيل التهويدة';
+}
+function friendlyCamLabel(label, i, total) {
+  const l = (label || '').toLowerCase();
+  if (l.includes('front')) return '📷 أمامية';
+  if (l.includes('wide') || l.includes('ultra') || l.includes('0.5')) return '🔭 واسعة';
+  if (l.includes('back') || l.includes('rear')) return total > 2 ? `📷 خلفية ${i + 1}` : '📷 خلفية';
+  if (l.includes('tele')) return '🔎 مقرّبة';
+  return '📷 ' + (label || ('كاميرا ' + (i + 1)));
+}
+function renderCameraButtons() {
+  if (!cameraBtnsEl) return;
+  cameraBtnsEl.innerHTML = '';
+  if (!cameraList.length) {
+    cameraBtnsEl.innerHTML = '<span class="hint">لا توجد كاميرات بعد — اضغط "تحديث الكاميرات".</span>';
+    return;
+  }
+  cameraList.forEach((cam, i) => {
+    const b = document.createElement('button');
+    b.className = 'btn ghost' + (cam.id === currentCameraId ? ' green' : '');
+    b.textContent = friendlyCamLabel(cam.label, i, cameraList.length);
+    b.title = cam.label || '';
+    b.onclick = () => {
+      if (!connectedToBaby()) return showToast('لسه مفيش اتصال بموبايل البيبي');
+      sendSignal({ type: 'camera', deviceId: cam.id });
+      clog('طلب تبديل الكاميرا إلى: ' + (cam.label || cam.id));
+    };
+    cameraBtnsEl.appendChild(b);
+  });
+}
+if (lullabyBtn) lullabyBtn.onclick = () => {
+  if (!connectedToBaby()) return showToast('لسه مفيش اتصال بموبايل البيبي');
+  lullabyOn = !lullabyOn;
+  updateLullabyBtn();
+  sendSignal({ type: 'lullaby', on: lullabyOn });
+  clog(lullabyOn ? '🎵 طلب تشغيل التهويدة على موبايل البيبي' : '⏸️ طلب إيقاف التهويدة');
+};
+if (flipBtn) flipBtn.onclick = () => {
+  if (!connectedToBaby()) return showToast('لسه مفيش اتصال بموبايل البيبي');
+  sendSignal({ type: 'flip' });
+  clog('🔄 طلب تبديل الكاميرا (التالي) على موبايل البيبي');
+};
+if (refreshCamsBtn) refreshCamsBtn.onclick = () => {
+  if (!connectedToBaby()) return showToast('لسه مفيش اتصال بموبايل البيبي');
+  sendSignal({ type: 'cameras-request' });
+  clog('🔄 طلب تحديث قائمة الكاميرات');
+};
+
 async function handleSignal(data) {
   if (!data || !data.type) return;
   try {
@@ -341,6 +403,25 @@ async function handleSignal(data) {
     } else if (data.type === 'sound-alert') {
       addAlert('🔊', `صوت عالي عند البيبي — ممكن يكون بيبكي (مستوى ${data.level || ''}%)`);
       showToast('🔊 صوت عالي عند البيبي!');
+    } else if (data.type === 'cameras') {
+      cameraList = data.list || [];
+      currentCameraId = data.current || null;
+      clog(`وصلت قائمة كاميرات موبايل البيبي: ${cameraList.length} كاميرا`);
+      renderCameraButtons();
+    } else if (data.type === 'camera-state') {
+      if (data.error) {
+        showToast('⚠️ تعذّر تبديل الكاميرا على موبايل البيبي');
+        clog('⚠️ تعذّر تبديل الكاميرا: ' + data.error);
+      } else if (data.label) {
+        currentCameraId = data.deviceId || currentCameraId;
+        if (cameraLabelEl) cameraLabelEl.textContent = data.label;
+        clog('الكاميرا الحالية عند البيبي: ' + data.label);
+        renderCameraButtons();
+      }
+    } else if (data.type === 'lullaby-state') {
+      lullabyOn = !!data.on;
+      updateLullabyBtn();
+      clog(lullabyOn ? '🎵 التهويدة شغالة على موبايل البيبي' : '⏸️ التهويدة واقفة على موبايل البيبي');
     }
   } catch (e) {
     console.warn('signal error', e);
